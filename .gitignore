@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Sensitive config
+config.py
+
+# Database (你的隐私数据)
+*.db
+
+# Logs
+*.log

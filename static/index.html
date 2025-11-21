@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>BiliInsights 控制台</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      background: #050608;
+      color: #e5e7eb;
+    }
+    header {
+      padding: 10px 18px;
+      border-bottom: 1px solid #1f2933;
+      display: flex;
+      align-items: center;
+      background: #050608;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    #header-date {
+      font-size: 15px;
+      font-weight: 600;
+      color: #9ca3af;
+    }
+    .nav-tabs {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin: 0 auto;
+    }
+    .nav-btn {
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 1px solid #374151;
+      background: transparent;
+      color: #e5e7eb;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .nav-btn.active {
+      background: #2563eb;
+      border-color: #2563eb;
+    }
+    main {
+      padding: 14px 18px 36px;
+    }
+    .hidden { display: none; }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .card {
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: #111827;
+      border: 1px solid #1f2933;
+      cursor: default;
+    }
+    .card.clickable { cursor: pointer; }
+    .card.clickable:hover { border-color: #2563eb; }
+    .card-title {
+      font-size: 12px;
+      color: #9ca3af;
+      margin-bottom: 4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .card-main {
+      font-size: 22px;
+      font-weight: 600;
+    }
+    .card-diff {
+      font-size: 16px;    /* 日增数字更醒目 */
+      font-weight: 500;
+      margin-top: 4px;
+    }
+    .card-diff.positive { color: #4ade80; }
+    .card-diff.negative { color: #f97373; }
+
+    .section-title {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 10px 0 6px;
+    }
+    .section-sub {
+      font-size: 12px;
+      color: #9ca3af;
+      margin-top: -4px;
+      margin-bottom: 4px;
+    }
+    .chart-container {
+      background: #111827;
+      border-radius: 10px;
+      border: 1px solid #1f2933;
+      padding: 10px;
+      margin-bottom: 12px;
+    }
+    .layout-two-cols {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    @media (max-width: 900px) {
+      .layout-two-cols {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      padding: 7px 6px;
+      border-bottom: 1px solid #1f2933;
+      text-align: left;
+    }
+    th {
+      color: #9ca3af;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    tr:hover {
+      background: rgba(55,65,81,0.4);
+    }
+    a {
+      color: #60a5fa;
+      text-decoration: none;
+    }
+    a:hover { text-decoration: underline; }
+
+    /* 视频分析布局 */
+    .video-layout {
+      display: grid;
+      grid-template-columns: minmax(240px, 300px) 1fr;
+      gap: 12px;
+    }
+    @media (max-width: 900px) {
+      .video-layout {
+        grid-template-columns: 1fr;
+      }
+    }
+    .video-list {
+      background: #111827;
+      border-radius: 10px;
+      border: 1px solid #1f2933;
+      padding: 8px 0;
+    }
+    .video-item {
+      padding: 12px 12px;
+      border-bottom: 1px solid #1f2933; /* 分隔线 */
+      cursor: pointer;
+    }
+    .video-item:last-child {
+      border-bottom: none;
+    }
+    .video-item:hover {
+      background: #1f2937;
+    }
+    .video-item.active {
+      background: #2563eb33;
+      border-left: 3px solid #2563eb;
+    }
+    .video-item-title {
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .video-item-meta {
+      font-size: 11px;
+      color: #9ca3af;
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .video-detail {
+      background: #111827;
+      border-radius: 10px;
+      border: 1px solid #1f2933;
+      padding: 10px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 6px;
+      border-radius: 999px;
+      font-size: 10px;
+      border: 1px solid #374151;
+      color: #9ca3af;
+      margin-right: 6px;
+    }
+    .video-meta-line {
+      font-size: 12px;
+      color: #9ca3af;
+      margin-top: 4px;
+    }
+    .video-stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .metric-card {
+      padding: 8px 9px;
+      border-radius: 10px;
+      background: #020617;
+      border: 1px solid #1f2933;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .metric-card.active {
+      /* 边框颜色改为由内联 style 控制，这里只保留轻微背景 */
+      background: #02081a;
+    }
+    .metric-card .label {
+      color: #9ca3af;
+      margin-bottom: 2px;
+    }
+    .metric-card .value {
+      font-size: 18px;
+      font-weight: 600;
+    }
+    .metric-card .top-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+    .metric-card .rate {
+      font-size: 18px;
+      color: #9ca3af;
+      margin-left: 6px;
+    }
+    .metric-card .diff-line {
+      margin-top: 4px;
+      font-size: 14px; /* 增量更大更显眼 */
+    }
+    .metric-card .diff-pos { color: #4ade80; }
+    .metric-card .diff-neg { color: #f97373; }
+    /* 视频分析页高度控制 */
+    #page-video {
+      height: calc(100vh - 60px); /* 约等于视口高度减去 header */
+      overflow: hidden;
+    }
+    #page-video .video-layout {
+      height: 100%;
+    }
+    #page-video .video-list,
+    #page-video .video-detail {
+      height: 100%;
+      overflow-y: auto;
+    }
+
+    .btn-group {
+      display: inline-flex;
+      border-radius: 999px;
+      border: 1px solid #374151;
+      overflow: hidden;
+      font-size: 11px;
+    }
+    .btn-group button {
+      border: none;
+      background: transparent;
+      padding: 4px 8px;
+      cursor: pointer;
+      color: #9ca3af;
+    }
+    .btn-group button.active {
+      background: #2563eb;
+      color: #e5e7eb;
+    }
+  </style>
+</head>
+<body>
+<header>
+  <div id="header-date"></div>
+  <div class="nav-tabs">
+    <button class="nav-btn active" data-page="today">今日数据</button>
+    <button class="nav-btn" data-page="video">视频分析</button>
+    <button class="nav-btn" data-page="rank">排行榜</button>
+  </div>
+</header>
+
+<main>
+  <!-- 今日数据 -->
+  <section id="page-today">
+    <div class="cards" id="today-cards"></div>
+
+    <div>
+      <div class="section-title" id="latest-video-title">最近发布：-</div>
+      <div class="cards" id="latest-video-cards"></div>
+    </div>
+
+    <div class="layout-two-cols" style="margin-top:10px;">
+      <div class="chart-container">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <div class="section-title" style="margin:0;">涨粉</div>
+          <div class="btn-group" id="fans-range-group">
+            <button data-range="7">7天</button>
+            <button data-range="15" class="active">15天</button>
+            <button data-range="30">30天</button>
+          </div>
+        </div>
+        <canvas id="fans-daily-15-chart" height="120"></canvas>
+      </div>
+      <div class="chart-container">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <div class="section-title" style="margin:0;">播放</div>
+          <div class="btn-group" id="views-range-group">
+            <button data-range="7">7天</button>
+            <button data-range="15" class="active">15天</button>
+            <button data-range="30">30天</button>
+          </div>
+        </div>
+        <canvas id="views-daily-15-chart" height="120"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <!-- 视频分析 -->
+  <section id="page-video" class="hidden">
+    <div class="video-layout">
+      <div class="video-list" id="video-list"></div>
+      <div class="video-detail">
+        <div id="video-detail-main">请选择左侧一条视频</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 排行榜 -->
+  <section id="page-rank" class="hidden">
+    <div class="chart-container" style="overflow-x:auto;">
+      <table id="rank-table">
+        <thead>
+        <tr>
+          <th>#</th>
+          <th>标题</th>
+          <th data-sort="view">播放</th>
+          <th data-sort="like">点赞</th>
+          <th data-sort="coin">投币</th>
+          <th data-sort="favorite">收藏</th>
+          <th data-sort="reply">评论</th>
+          <th data-sort="like_rate">点赞率</th>
+          <th data-sort="coin_rate">投币率</th>
+          <th data-sort="fav_rate">收藏率</th>
+          <th data-sort="reply_rate">评论率</th>
+          <th data-sort="pubdate">发布时间</th>
+        </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+  // ===== 全局状态 =====
+  let accountSnapshot = null;
+  let accountDailyDiff = null;
+  let accountHistoryAll = null;
+  let videosOverviewData = [];
+  let fansDaily15Chart = null;
+  let viewsDaily15Chart = null;
+  let fansRangeDays = 15;
+  let viewsRangeDays = 15;
+
+  // 视频分析页
+  let selectedVideo = null;
+  let videoHistoryCache = {};
+  let currentVideoRange = "7";           // "7" / "30" / "all"
+  let currentVideoMetrics = ["view"];    // 可多选
+  let videoMainChart = null;
+  let currentChartMode = "daily"; // "daily" 或 "total"
+
+  // 排行榜
+  let rankSortKey = "view";
+  let rankSortDir = "desc";
+
+  // 简单的颜色映射
+  const metricColors = {
+    view: "#60a5fa",
+    like: "#f97373",
+    coin: "#fbbf24",
+    favorite: "#34d399",
+    reply: "#a855f7",
+    danmaku: "#f472b6",
+  };
+
+  // ===== 工具函数 =====
+  function formatNumber(n) {
+    if (n == null) return "-";
+    n = Number(n);
+    if (n >= 1_0000_0000) return (n / 1_0000_0000).toFixed(1) + "亿";
+    if (n >= 1_0000) return (n / 1_0000).toFixed(1) + "万";
+    return n.toString();
+  }
+  // 精确到个位，用于总粉丝数
+  function formatNumberFull(n) {
+    if (n == null) return "-";
+    return String(Number(n));
+  }
+  function formatDelta(n) {
+    n = Number(n || 0);
+    if (n >= 0) return "+" + formatNumber(n);
+    return "-" + formatNumber(Math.abs(n));
+  }
+  function formatPercent(p) {
+    if (p == null || !isFinite(p)) return "-";
+    return (p * 100).toFixed(1) + "%";
+  }
+  function formatDateFromTimestamp(ts) {
+    if (!ts) return "-";
+    const d = new Date(ts * 1000);
+    return d.toISOString().slice(0, 10);
+  }
+  function metricFieldLabel(field) {
+    return {
+      view: "播放",
+      like: "点赞",
+      coin: "投币",
+      favorite: "收藏",
+      reply: "评论",
+      danmaku: "弹幕",
+    }[field] || field;
+  }
+
+  function switchPage(page) {
+    document.querySelectorAll(".nav-btn").forEach(btn => {
+      btn.classList.toggle("active", btn.dataset.page === page);
+    });
+    document.querySelectorAll("main section").forEach(sec => {
+      sec.classList.add("hidden");
+    });
+    document.getElementById("page-" + page).classList.remove("hidden");
+  }
+
+  document.querySelectorAll(".nav-btn").forEach(btn => {
+    btn.addEventListener("click", () => switchPage(btn.dataset.page));
+  });
+
+  // ===== 后端数据拉取 =====
+  async function loadAccountSnapshot() {
+    const [latestRes, diffRes] = await Promise.all([
+      fetch("/api/account/latest"),
+      fetch("/api/account/daily_diff"),
+    ]);
+    accountSnapshot = await latestRes.json();
+    const diff = await diffRes.json();
+    accountDailyDiff = diff.error ? null : diff;
+
+    if (accountSnapshot && accountSnapshot.snapshot_date) {
+      document.getElementById("header-date").textContent = accountSnapshot.snapshot_date;
+    } else {
+      document.getElementById("header-date").textContent = "";
+    }
+  }
+
+  async function loadAccountHistory() {
+    const res = await fetch("/api/account/history");
+    const data = await res.json();
+    if (Array.isArray(data) && data.length > 0) {
+      accountHistoryAll = data;
+    }
+  }
+
+  async function loadVideosOverview() {
+    const res = await fetch("/api/videos/overview");
+    const data = await res.json();
+    if (Array.isArray(data)) videosOverviewData = data;
+  }
+
+  // ===== 今日数据：总指标卡片 =====
+  function renderTodayCards() {
+    const container = document.getElementById("today-cards");
+    container.innerHTML = "";
+
+    if (!accountSnapshot) {
+      container.innerHTML = "<div>暂无数据</div>";
+      return;
+    }
+    const d = accountDailyDiff || {};
+    const items = [
+      { key: "follower", title: "总粉丝", value: accountSnapshot.follower, diff: d.inc_follower },
+      { key: "total_view", title: "总播放", value: accountSnapshot.total_view, diff: d.inc_total_view },
+      { key: "total_like", title: "总点赞", value: accountSnapshot.total_like, diff: d.inc_total_like },
+      { key: "total_coin", title: "总投币", value: accountSnapshot.total_coin, diff: d.inc_total_coin },
+      { key: "total_favorite", title: "总收藏", value: accountSnapshot.total_favorite, diff: d.inc_total_favorite },
+      { key: "total_reply", title: "总评论", value: accountSnapshot.total_reply, diff: d.inc_total_reply },
+    ];
+
+    items.forEach(item => {
+      const diffVal = Number(item.diff || 0);
+      let diffClass = "card-diff";
+      if (diffVal > 0) diffClass += " positive";
+      else if (diffVal < 0) diffClass += " negative";
+
+      const valueText = item.key === "follower"
+        ? formatNumberFull(item.value)   // 总粉丝精确到个位
+        : formatNumber(item.value);
+
+      const div = document.createElement("div");
+      div.className = "card";
+      div.innerHTML = `
+        <div class="card-title">
+          <span>${item.title}</span>
+        </div>
+        <div class="card-main">${valueText}</div>
+        <div class="${diffClass}">${formatDelta(diffVal)}</div>
+      `;
+      container.appendChild(div);
+    });
+  }
+
+  // ===== 今日数据：最近发布视频卡片 =====
+  async function renderLatestVideoRow() {
+    const titleEl = document.getElementById("latest-video-title");
+    const cardsEl = document.getElementById("latest-video-cards");
+    cardsEl.innerHTML = "";
+
+    if (!videosOverviewData || videosOverviewData.length === 0) {
+      titleEl.textContent = "最近发布视频：暂无数据";
+      return;
+    }
+
+    const arr = [...videosOverviewData].sort((a, b) => (b.pubdate || 0) - (a.pubdate || 0));
+    const v = arr[0];
+    titleEl.textContent = "最近发布视频：" + (v.title || v.bvid);
+
+    let last = null, prev = null;
+    try {
+      const res = await fetch(`/api/video/${v.bvid}/history`);
+      const hist = await res.json();
+      if (Array.isArray(hist) && hist.length > 0) {
+        last = hist[hist.length - 1];
+        prev = hist.length >= 2 ? hist[hist.length - 2] : hist[hist.length - 1];
+      }
+    } catch (e) {
+      console.error(e);
+    }
+
+    const metrics = [
+      { key: "view", title: "播放", total: v.view },
+      { key: "like", title: "点赞", total: v.like },
+      { key: "coin", title: "投币", total: v.coin },
+      { key: "favorite", title: "收藏", total: v.favorite },
+      { key: "reply", title: "评论", total: v.reply },
+    ];
+
+    metrics.forEach(m => {
+      let diff = 0;
+      if (last && prev) {
+        diff = Number(last[m.key] || 0) - Number(prev[m.key] || 0);
+      }
+      let diffClass = "card-diff";
+      if (diff > 0) diffClass += " positive";
+      else if (diff < 0) diffClass += " negative";
+
+      const div = document.createElement("div");
+      div.className = "card clickable";
+      div.innerHTML = `
+        <div class="card-title"><span>${m.title}</span></div>
+        <div class="card-main">${formatNumber(m.total)}</div>
+        <div class="${diffClass}">${formatDelta(diff)}</div>
+      `;
+      div.addEventListener("click", () => {
+        switchPage("video");
+        selectVideoByBvid(v.bvid);
+      });
+      cardsEl.appendChild(div);
+    });
+  }
+
+  // ===== 今日数据：粉丝/播放日增图表更新函数 =====
+  function updateFansDailyChart() {
+    if (!accountHistoryAll || accountHistoryAll.length < 2) return;
+    const data = [...accountHistoryAll].sort((a, b) => (a.snapshot_date > b.snapshot_date ? 1 : -1));
+    const N = (fansRangeDays || 15) + 1; // 需要多 1 天来算差值
+    const sliced = data.length > N ? data.slice(-N) : data;
+    if (sliced.length < 2) return;
+
+    const labels = [];
+    const dailyFollowers = [];
+    for (let i = 1; i < sliced.length; i++) {
+      const cur = sliced[i];
+      const prev = sliced[i - 1];
+      labels.push(cur.snapshot_date);
+      dailyFollowers.push((cur.follower || 0) - (prev.follower || 0));
+    }
+
+    const ctxFans = document.getElementById("fans-daily-15-chart").getContext("2d");
+    if (fansDaily15Chart) fansDaily15Chart.destroy();
+    fansDaily15Chart = new Chart(ctxFans, {
+      type: "bar",
+      data: { labels, datasets: [{ label: "每日新增粉丝", data: dailyFollowers }] },
+      options: {
+        responsive: true,
+        plugins: { legend: { labels: { color: "#e5e7eb", font: { size: 11 } } } },
+        scales: {
+          x: { ticks: { color: "#9ca3af", font: { size: 10 } }, grid: { color: "#1f2933" } },
+          y: { ticks: { color: "#9ca3af", callback: v => formatNumber(v), font: { size: 10 } }, grid: { color: "#1f2933" } },
+        },
+      },
+    });
+  }
+
+  function updateViewsDailyChart() {
+    if (!accountHistoryAll || accountHistoryAll.length < 2) return;
+    const data = [...accountHistoryAll].sort((a, b) => (a.snapshot_date > b.snapshot_date ? 1 : -1));
+    const N = (viewsRangeDays || 15) + 1;
+    const sliced = data.length > N ? data.slice(-N) : data;
+    if (sliced.length < 2) return;
+
+    const labels = [];
+    const dailyViews = [];
+    for (let i = 1; i < sliced.length; i++) {
+      const cur = sliced[i];
+      const prev = sliced[i - 1];
+      labels.push(cur.snapshot_date);
+      dailyViews.push((cur.total_view || 0) - (prev.total_view || 0));
+    }
+
+    const ctxViews = document.getElementById("views-daily-15-chart").getContext("2d");
+    if (viewsDaily15Chart) viewsDaily15Chart.destroy();
+    viewsDaily15Chart = new Chart(ctxViews, {
+      type: "bar",
+      data: { labels, datasets: [{ label: "每日新增播放", data: dailyViews }] },
+      options: {
+        responsive: true,
+        plugins: { legend: { labels: { color: "#e5e7eb", font: { size: 11 } } } },
+        scales: {
+          x: { ticks: { color: "#9ca3af", font: { size: 10 } }, grid: { color: "#1f2933" } },
+          y: { ticks: { color: "#9ca3af", callback: v => formatNumber(v), font: { size: 10 } }, grid: { color: "#1f2933" } },
+        },
+      },
+    });
+  }
+
+  function renderAccountDaily15Charts() {
+    if (!accountHistoryAll || accountHistoryAll.length < 2) return;
+    updateFansDailyChart();
+    updateViewsDailyChart();
+  }
+
+  // ===== 视频分析页：左侧列表 =====
+  function renderVideoList() {
+    const listEl = document.getElementById("video-list");
+    listEl.innerHTML = "";
+
+    if (!videosOverviewData || videosOverviewData.length === 0) {
+      listEl.textContent = "暂无视频数据";
+      return;
+    }
+
+    const arr = [...videosOverviewData].sort((a, b) => (b.pubdate || 0) - (a.pubdate || 0));
+
+    arr.forEach(v => {
+      const item = document.createElement("div");
+      item.className = "video-item";
+      item.dataset.bvid = v.bvid;
+      const dateStr = formatDateFromTimestamp(v.pubdate);
+      item.innerHTML = `
+        <div class="video-item-title">${v.title || v.bvid}</div>
+        <div class="video-item-meta">▶ ${formatNumber(v.view)} ｜ 👍 ${formatNumber(v.like)} ｜ 🪙 ${formatNumber(v.coin)} ｜ ${dateStr}</div>
+      `;
+      item.addEventListener("click", () => selectVideo(v));
+      listEl.appendChild(item);
+    });
+
+    if (arr.length > 0) selectVideo(arr[0]);
+  }
+
+  function selectVideoByBvid(bvid) {
+    if (!videosOverviewData) return;
+    const v = videosOverviewData.find(x => x.bvid === bvid);
+    if (v) selectVideo(v);
+  }
+
+  function selectVideo(video) {
+    selectedVideo = video;
+    document.querySelectorAll(".video-item").forEach(item => {
+      item.classList.toggle("active", item.dataset.bvid === video.bvid);
+    });
+    // 先画一版没有日增的头部
+    renderVideoDetailHeader(video, null);
+    // 加载历史后再刷新头部 + 图表
+    loadVideoHistory(video.bvid);
+  }
+
+  function renderVideoDetailHeader(video, history) {
+    const container = document.getElementById("video-detail-main");
+    const url = "https://www.bilibili.com/video/" + video.bvid;
+
+    const likeRate = video.like_rate ?? (video.view ? video.like / video.view : 0);
+    const coinRate = video.coin_rate ?? (video.view ? video.coin / video.view : 0);
+    const favRate  = video.fav_rate  ?? (video.view ? video.favorite / video.view : 0);
+    const replyRate= video.reply_rate?? (video.view ? video.reply / video.view : 0);
+
+    const diffMap = { view: 0, like: 0, coin: 0, favorite: 0, reply: 0, danmaku: 0 };
+    if (Array.isArray(history) && history.length >= 2) {
+      const last = history[history.length - 1];
+      const prev = history[history.length - 2];
+      ["view","like","coin","favorite","reply","danmaku"].forEach(k => {
+        diffMap[k] = Number(last[k] || 0) - Number(prev[k] || 0);
+      });
+    }
+
+    container.innerHTML = `
+      <div style="margin-bottom:6px;">
+        <a href="${url}" target="_blank" style="font-size:14px;font-weight:600;">
+          ${video.title || video.bvid}
+        </a>
+      </div>
+      <div class="video-meta-line">
+        <span class="badge">${video.bvid}</span>
+        发布于 ${formatDateFromTimestamp(video.pubdate)}
+      </div>
+      <div class="video-stats-grid" id="video-metrics-grid">
+        ${renderMetricCardHtml("view",    "播放",   video.view,    null,       diffMap.view)}
+        ${renderMetricCardHtml("like",    "点赞",   video.like,    likeRate,   diffMap.like)}
+        ${renderMetricCardHtml("coin",    "投币",   video.coin,    coinRate,   diffMap.coin)}
+        ${renderMetricCardHtml("favorite","收藏",   video.favorite,favRate,    diffMap.favorite)}
+        ${renderMetricCardHtml("reply",   "评论",   video.reply,   replyRate,  diffMap.reply)}
+        ${renderMetricCardHtml("danmaku", "弹幕",   video.danmaku, null,       diffMap.danmaku)}
+      </div>
+      <div style="margin-top:10px;margin-bottom:4px;display:flex;justify-content:flex-end;align-items:center;">
+        <div class="btn-group" id="video-range-group">
+          <button data-range="7" class="${currentVideoRange==='7'?'active':''}">近7日</button>
+          <button data-range="30" class="${currentVideoRange==='30'?'active':''}">近30日</button>
+          <button data-range="all" class="${currentVideoRange==='all'?'active':''}">全部</button>
+        </div>
+      </div>
+      <div class="chart-container">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <div class="btn-group" id="video-mode-group">
+            <button data-mode="daily" class="${currentChartMode==='daily'?'active':''}">日增</button>
+            <button data-mode="total" class="${currentChartMode==='total'?'active':''}">总量</button>
+          </div>
+        </div>
+        <canvas id="video-main-chart" height="110"></canvas>
+      </div>
+    `;
+
+    // 绑定 metric-card 点击（多选）
+    container.querySelectorAll(".metric-card").forEach(card => {
+      card.addEventListener("click", () => {
+        const metric = card.dataset.metric;
+        const idx = currentVideoMetrics.indexOf(metric);
+        if (idx >= 0) {
+          currentVideoMetrics.splice(idx, 1);
+        } else {
+          currentVideoMetrics.push(metric);
+        }
+        if (currentVideoMetrics.length === 0) {
+          currentVideoMetrics.push("view");
+        }
+        container.querySelectorAll(".metric-card").forEach(c => {
+          const m = c.dataset.metric;
+          const on = currentVideoMetrics.includes(m);
+          c.classList.toggle("active", on);
+          if (on) {
+            const col = metricColors[m] || "#60a5fa";
+            c.style.borderColor = col;
+            c.style.boxShadow = `0 0 0 1px ${col}33`;
+          } else {
+            c.style.borderColor = "#1f2933";
+            c.style.boxShadow = "none";
+          }
+        });
+        if (selectedVideo && videoHistoryCache[selectedVideo.bvid]) {
+          updateVideoCharts(videoHistoryCache[selectedVideo.bvid]);
+        }
+      });
+    });
+
+    // 绑定 range 切换
+    container.querySelector("#video-range-group").addEventListener("click", e => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      currentVideoRange = btn.dataset.range;
+      container.querySelectorAll("#video-range-group button").forEach(b => {
+        b.classList.toggle("active", b === btn);
+      });
+      if (selectedVideo && videoHistoryCache[selectedVideo.bvid]) {
+        updateVideoCharts(videoHistoryCache[selectedVideo.bvid]);
+      }
+    });
+    // 绑定 mode 切换
+    const modeGroup = container.querySelector("#video-mode-group");
+    modeGroup.addEventListener("click", e => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      currentChartMode = btn.dataset.mode;
+      modeGroup.querySelectorAll("button").forEach(b => {
+        b.classList.toggle("active", b === btn);
+      });
+      if (selectedVideo && videoHistoryCache[selectedVideo.bvid]) {
+        updateVideoCharts(videoHistoryCache[selectedVideo.bvid]);
+      }
+    });
+  }
+
+  function renderMetricCardHtml(metricKey, label, total, rate, diff) {
+    const active = currentVideoMetrics.includes(metricKey) ? "active" : "";
+    const diffNum = Number(diff || 0);
+    let diffClass = "";
+    if (diffNum > 0) diffClass = "diff-pos";
+    else if (diffNum < 0) diffClass = "diff-neg";
+    const diffText = diffNum === 0 ? "0" : (diffNum > 0 ? "+" + diffNum : "" + diffNum);
+    const rateText = rate == null ? "" : formatPercent(rate);
+    const color = metricColors[metricKey] || "#60a5fa";
+    const style = active ? `style="border-color:${color};box-shadow:0 0 0 1px ${color}33;"` : "";
+    return `
+      <div class="metric-card ${active}" data-metric="${metricKey}" ${style}>
+        <div class="label">${label}</div>
+        <div class="top-row">
+          <span class="value">${formatNumber(total)}</span>
+          <span class="rate">${rateText}</span>
+        </div>
+        <div class="diff-line ${diffClass}">${diffText}</div>
+      </div>
+    `;
+  }
+
+  async function loadVideoHistory(bvid) {
+    if (videoHistoryCache[bvid]) {
+      renderVideoDetailHeader(selectedVideo, videoHistoryCache[bvid]);
+      updateVideoCharts(videoHistoryCache[bvid]);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/video/${bvid}/history`);
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        videoHistoryCache[bvid] = data;
+        renderVideoDetailHeader(selectedVideo, data);
+        updateVideoCharts(data);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  function updateVideoCharts(history) {
+    if (!Array.isArray(history) || history.length === 0) return;
+    let data = [...history].sort((a, b) => (a.snapshot_date > b.snapshot_date ? 1 : -1));
+    if (currentVideoRange !== "all") {
+      const N = Number(currentVideoRange);
+      if (data.length > N) data = data.slice(-N);
+    }
+
+    if (!currentVideoMetrics || currentVideoMetrics.length === 0) {
+      currentVideoMetrics = ["view"]; // 至少一条
+    }
+
+    const labelsTotal = data.map(d => d.snapshot_date);
+    const totalDatasets = [];
+    const dailyDatasets = [];
+    let dailyLabels = [];
+
+    currentVideoMetrics.forEach(metricKey => {
+      const totals = data.map(d => d[metricKey] || 0);
+      const dailyVals = [];
+      const dl = [];
+      for (let i = 1; i < data.length; i++) {
+        dl.push(data[i].snapshot_date);
+        dailyVals.push((data[i][metricKey] || 0) - (data[i - 1][metricKey] || 0));
+      }
+      if (dl.length > dailyLabels.length) dailyLabels = dl;
+
+      const color = metricColors[metricKey] || "#60a5fa";
+      totalDatasets.push({
+        label: metricFieldLabel(metricKey) + "总量",
+        data: totals,
+        borderWidth: 1,
+        tension: 0.2,
+        fill: false,
+        borderColor: color,
+      });
+      dailyDatasets.push({
+        label: metricFieldLabel(metricKey) + "日增",
+        data: dailyVals,
+        borderWidth: 1,
+        tension: 0.2,
+        fill: false,
+        borderColor: color,
+      });
+    });
+
+    const useLabels = currentChartMode === "daily" ? dailyLabels : labelsTotal;
+    const useDatasets = currentChartMode === "daily" ? dailyDatasets : totalDatasets;
+
+    const ctx = document.getElementById("video-main-chart").getContext("2d");
+    if (videoMainChart) videoMainChart.destroy();
+    videoMainChart = new Chart(ctx, {
+      type: "line",
+      data: { labels: useLabels, datasets: useDatasets },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: "#9ca3af", font: { size: 10 } }, grid: { color: "#1f2933" } },
+          y: { ticks: { color: "#9ca3af", callback: v => formatNumber(v), font: { size: 10 } }, grid: { color: "#1f2933" } },
+        },
+      },
+    });
+  }
+
+  // ===== 排行榜 =====
+  function renderRankTable() {
+    const tbody = document.querySelector("#rank-table tbody");
+    tbody.innerHTML = "";
+
+    if (!videosOverviewData || videosOverviewData.length === 0) {
+      tbody.innerHTML = "<tr><td colspan='12'>暂无数据</td></tr>";
+      return;
+    }
+
+    const arr = [...videosOverviewData];
+    arr.sort((a, b) => {
+      const va = a[rankSortKey] ?? 0;
+      const vb = b[rankSortKey] ?? 0;
+      if (typeof va === "string") {
+        return rankSortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+      } else {
+        return rankSortDir === "asc" ? va - vb : vb - va;
+      }
+    });
+
+    arr.forEach((v, idx) => {
+      const tr = document.createElement("tr");
+      const url = "https://www.bilibili.com/video/" + v.bvid;
+      tr.innerHTML = `
+        <td>${idx + 1}</td>
+        <td><a href="${url}" target="_blank">${v.title || v.bvid}</a></td>
+        <td>${formatNumber(v.view)}</td>
+        <td>${formatNumber(v.like)}</td>
+        <td>${formatNumber(v.coin)}</td>
+        <td>${formatNumber(v.favorite)}</td>
+        <td>${formatNumber(v.reply)}</td>
+        <td>${formatPercent(v.like_rate)}</td>
+        <td>${formatPercent(v.coin_rate)}</td>
+        <td>${formatPercent(v.fav_rate)}</td>
+        <td>${formatPercent(v.reply_rate)}</td>
+        <td>${formatDateFromTimestamp(v.pubdate)}</td>
+      `;
+      tr.addEventListener("click", () => {
+        switchPage("video");
+        selectVideoByBvid(v.bvid);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  document.querySelectorAll("#rank-table th[data-sort]").forEach(th => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.sort;
+      if (rankSortKey === key) {
+        rankSortDir = rankSortDir === "asc" ? "desc" : "asc";
+      } else {
+        rankSortKey = key;
+        rankSortDir = "desc";
+      }
+      renderRankTable();
+    });
+  });
+
+  // ===== 初始化 =====
+  async function init() {
+    await loadAccountSnapshot();
+    await loadAccountHistory();
+    await loadVideosOverview();
+
+    // 绑定粉丝/播放范围切换
+    const fansGroup = document.getElementById("fans-range-group");
+    if (fansGroup) {
+      fansGroup.addEventListener("click", e => {
+        const btn = e.target.closest("button");
+        if (!btn) return;
+        fansRangeDays = parseInt(btn.dataset.range, 10) || 15;
+        fansGroup.querySelectorAll("button").forEach(b => {
+          b.classList.toggle("active", b === btn);
+        });
+        updateFansDailyChart();
+      });
+    }
+    const viewsGroup = document.getElementById("views-range-group");
+    if (viewsGroup) {
+      viewsGroup.addEventListener("click", e => {
+        const btn = e.target.closest("button");
+        if (!btn) return;
+        viewsRangeDays = parseInt(btn.dataset.range, 10) || 15;
+        viewsGroup.querySelectorAll("button").forEach(b => {
+          b.classList.toggle("active", b === btn);
+        });
+        updateViewsDailyChart();
+      });
+    }
+
+    renderTodayCards();
+    renderLatestVideoRow();
+    renderAccountDaily15Charts();
+    renderVideoList();
+    renderRankTable();
+  }
+
+  init();
+</script>
+</body>
+</html>
