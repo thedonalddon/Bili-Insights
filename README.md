@@ -35,29 +35,30 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-在根目录修改配置文件config.py：
+修改根目录下的配置文件config-example.py，并改名为config.py：
 ```
 BILI_COOKIE = "你的浏览器 Cookie"
 MY_MID = "你的 UID"
 ```
 
+Cookie请使用浏览器登录B站后，自行从开发者模式中获取。
+
 ## 使用方式
 
-1. 拉取快照（每日执行一次）
+1. 拉取快照（每日执行一次，如重复执行，只保留当日最后一次结果）
 
 ```python snapshot_job.py```
 
 你可以用 crontab 或 schedule 来自动化：
 
 ```0 3 * * * /usr/bin/python /path/to/snapshot_job.py```
-
 2. 启动 Web 可视化界面
 
 ```python app.py```
 
 在浏览器中打开：
 
-```http://127.0.0.1:5000/```
+```http://127.0.0.1:8765/```
 
 ## 许可证（License）
 
