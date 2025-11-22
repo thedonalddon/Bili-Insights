@@ -40,6 +40,9 @@ pip install -r requirements.txt
 BILI_COOKIE = "你的浏览器 Cookie"
 MY_MID = "你的 UID"
 ```
+```
+mv config-example.py config.py
+```
 
 Cookie请使用浏览器登录B站后，自行从开发者模式中获取。
 
@@ -59,6 +62,8 @@ Cookie请使用浏览器登录B站后，自行从开发者模式中获取。
 在浏览器中打开：
 
 ```http://127.0.0.1:8765/```
+
+请注意放行服务器的 8765 端口。
 
 ## 许可证（License）
 
