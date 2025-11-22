@@ -111,6 +111,54 @@ chmod +x /path/to/Bili-Insights/daily_update.sh
 
 请将 `/path/to/Bili-Insights` 替换为你在服务器上的实际项目路径。
 
+## 可视化前端 Web 服务自启动（systemd，推荐）
+
+若希望服务器在重启后自动启动可视化 Web 服务，可创建一个 systemd 服务：
+
+新建服务文件：
+
+```bash
+sudo nano /etc/systemd/system/bili-insights.service
+```
+
+写入以下内容（请将路径替换为你服务器上的真实路径）：
+
+```ini
+[Unit]
+Description=Bili-Insights Web Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/Bili-Insights
+ExecStart=/path/to/Bili-Insights/venv/bin/python app.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+保存： `Ctrl + O`，退出： `Ctrl + X`。  
+
+启动服务：
+
+```bash
+sudo systemctl start bili-insights.service
+```
+
+设置开机自启：
+
+```bash
+sudo systemctl enable bili-insights.service
+```
+
+查看运行状态：
+
+```bash
+sudo systemctl status bili-insights.service
+```
+
 ## License
 
 本项目采用 **CC BY-NC-SA 4.0（署名-非商业性使用-相同方式共享）** 授权协议。
