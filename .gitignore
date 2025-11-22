@@ -17,6 +17,8 @@ config.py
 
 # Database (你的隐私数据)
 *.db
+esp32/resources/
+esp_output/
 
 # Logs
 *.log
