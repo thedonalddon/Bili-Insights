@@ -18,6 +18,7 @@ config.py
 # Database (你的隐私数据)
 *.db
 esp32/resources/
+esp32/example/
 esp_output/
 
 # Logs

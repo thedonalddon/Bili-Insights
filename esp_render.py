@@ -8,10 +8,9 @@
 # - 最近视频：标题、BV、发布日期、七个指标（总数 + 日增）+ 近 7 日播放日增折线
 #
 # 输出：
-#   esp_output/dashboard_preview.png
-#   esp_output/dashboard_black.bin
-#   esp_output/dashboard_red.bin
-#   esp_output/dashboard_yellow.bin
+#   esp_output/dashboard_preview.png        # 原始 RGB 预览
+#   esp_output/dashboard7c_preview.png      # 7C 调色板量化后的预览
+#   esp_output/dashboard7c_800x480.bin      # 给 ESP32 下载的原始 7C 帧缓冲（800*480 字节）
 #
 # 依赖：Pillow
 #   pip install pillow
@@ -21,6 +20,7 @@ from typing import Dict, Any, List, Tuple
 from datetime import datetime
 
 from PIL import Image, ImageDraw, ImageFont
+import numpy as np
 
 from config import ACCOUNT_NAME, ACCOUNT_INTRO, AVATAR_PATH
 from db import (
@@ -62,7 +62,8 @@ def load_font(size: int) -> ImageFont.ImageFont:
     # 优先使用项目内的自定义中文字体，其次尝试常见系统字体
     candidates = [
         # 项目自带字体
-        "esp32/resources/fonts/LXGWWenKaiTC-Medium.ttf",
+        "esp32/resources/fonts/LXGWFasmartGothicMN.ttf",
+        # "esp32/resources/fonts/LXGWHeartSerifCL.ttf",
         # macOS
         "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/STHeiti Medium.ttc",
@@ -87,6 +88,7 @@ FONT_NAME = load_font(36)
 FONT_TAGLINE = load_font(18)
 FONT_DATE = load_font(20)
 FONT_METRIC_BIG = load_font(40)
+FONT_METRIC_INC = load_font(32)
 FONT_METRIC_LABEL = load_font(20)
 FONT_SMALL = load_font(18)
 FONT_TINY = load_font(14)
@@ -224,11 +226,11 @@ def draw_line_chart(draw: ImageDraw.ImageDraw,
     # 折线
     for i in range(1, n):
         draw.line((xs[i - 1], ys[i - 1], xs[i], ys[i]),
-                  fill=line_color, width=2)
+                  fill=line_color, width=4)
 
     # 每个点画一个小圆点（红点）
     for i in range(n):
-        r = 3
+        r = 4
         draw.ellipse((xs[i] - r, ys[i] - r, xs[i] + r, ys[i] + r),
                      fill=line_color, outline=line_color)
 
@@ -290,8 +292,8 @@ def build_account_context() -> Dict[str, Any]:
         if d:
             try:
                 dt = datetime.strptime(d, "%Y-%m-%d")
-                # 用 11-1 这种格式，不要前导 0
-                date_list.append(f"{dt.month}-{dt.day}")
+                # 只显示日
+                date_list.append(f"{dt.day}")
             except Exception:
                 date_list.append(str(d))
         else:
@@ -354,8 +356,8 @@ def build_video_context() -> Dict[str, Any]:
         if d:
             try:
                 dt = datetime.strptime(d, "%Y-%m-%d")
-                # 用 11-1 这种格式，不要前导 0
-                date_list.append(f"{dt.month}-{dt.day}")
+                # 只显示日
+                date_list.append(f"{dt.day}")
             except Exception:
                 date_list.append(str(d))
         else:
@@ -535,8 +537,8 @@ def render_dashboard(account_ctx: Dict[str, Any],
 
         sign = "+" if inc >= 0 else ""
         inc_text = f"{sign}{inc}"
-        w_i, h_i = measure_text(inc_text, FONT_METRIC_LABEL)
-        draw.text((x0 + w - w_i - 12, num_center_y - h_i // 2), inc_text, font=FONT_METRIC_LABEL, fill=RED)
+        w_i, h_i = measure_text(inc_text, FONT_METRIC_INC)
+        draw.text((x0 + w - w_i - 12, num_center_y - h_i // 2), inc_text, font=FONT_METRIC_INC, fill=RED)
 
         # 折线图区域：整体拉高一点，利用中间空白
         chart_rect = (x0 + 10, y0 + 66, x0 + w - 10, y0 + h - 12)
@@ -684,115 +686,99 @@ def render_dashboard(account_ctx: Dict[str, Any],
     return img
 
 
+
+def clamp01(a):
+    return np.clip(a, 0.0, 1.0)
+
+
 # ==========================
-# 位平面导出：black / red / yellow
+# PNG -> GxEPD2 7C 原始帧缓冲（二进制）
 # ==========================
 
-def export_bitplanes(img: Image.Image, basename: str):
+# GoodDisplay / GxEPD2 7色色码（这里只用其中 4 色）
+# code, (R,G,B)
+PALETTE_7C = [
+    (0xFF, (255, 255, 255)),  # white
+    (0x00, (0,   0,   0  )),  # black
+    (0xE5, (230, 0,   18 )),  # red
+    (0xFC, (255, 242, 0  )),  # yellow
+]
+
+
+def export_dashboard_7c_bin(img: Image.Image,
+                            out_bin_name: str = "dashboard7c_800x480.bin",
+                            preview_name: str = "dashboard7c_preview.png"):
     """
-    将 RGB 图转换为 3 个 bitplane：
-    - black_plane:   灰度区域按抖动阈值 → 黑/白
-    - red_plane:     接近红色的像素 → bit=1
-    - yellow_plane:  接近黄色的像素 → bit=1
-    其他视为白。
-    同时输出两种预览：
-    - {basename}_preview.png         原始设计稿
-    - {basename}_merged.png          按 3 plane 合成的“墨水屏效果”
+    将 RGB 仪表盘图像量化为 GoodDisplay / GxEPD2 7C 专用格式（1 byte / pixel 色码），
+    输出：
+      - esp_output/{out_bin_name} : 原始 7C 帧缓冲二进制（800*480 字节）
+      - esp_output/{preview_name} : 使用 7C 调色板重新着色后的预览 PNG
     """
-    img = img.convert("RGB")
-    pixels = img.load()
+    # 保存一份原始预览（完整 RGB）
+    preview_rgb_path = os.path.join(OUTPUT_DIR, "dashboard_preview.png")
+    img_rgb = img.convert("RGB")
+    if img_rgb.size != (W, H):
+        img_rgb = img_rgb.resize((W, H), Image.LANCZOS)
+    img_rgb.save(preview_rgb_path)
 
-    total_bits = W * H
-    total_bytes = (total_bits + 7) // 8
+    # 准备量化输入
+    arr = np.asarray(img_rgb, dtype=np.float32) / 255.0  # H x W x 3
 
-    black_buf = bytearray(total_bytes)
-    red_buf = bytearray(total_bytes)
-    yellow_buf = bytearray(total_bytes)
+    codes = np.array([c for c, _rgb in PALETTE_7C], dtype=np.uint8)
+    colors = np.array([_rgb for _c, _rgb in PALETTE_7C], dtype=np.float32) / 255.0  # N x 3
 
-    for y in range(H):
-        for x in range(W):
-            r, g, b = pixels[x, y]
+    h, w, _ = arr.shape
+    out = np.zeros((h, w), dtype=np.uint8)
 
-            # 先判定红 / 黄（用于 UI 强调）
-            # 红色：R 明显高于 G/B，用于保证红字笔画尽量纯红，不混黑
-            is_red = (r > 160 and (r - g) > 40 and (r - b) > 40)
+    # Floyd–Steinberg 抖动
+    for y in range(h):
+        if y % 40 == 0:
+            print(f"[esp_render] dither row {y}/{h}")
+        for x in range(w):
+            old = arr[y, x]
+            diff = colors - old
+            dist2 = np.sum(diff * diff, axis=1)
+            idx = int(np.argmin(dist2))
+            new = colors[idx]
+            out[y, x] = codes[idx]
+            err = old - new
 
-            # 黄色：R、G 较高且接近，B 明显偏低，用于 UI 浅黄底
-            is_yellow_candidate = (
-                r > 200 and g > 200 and abs(r - g) < 40 and b < 230 and
-                ((r + g) / 2.0 - b) > 20
-            )
+            if x + 1 < w:
+                arr[y, x + 1] = clamp01(arr[y, x + 1] + err * (7.0 / 16.0))
+            if y + 1 < h:
+                if x > 0:
+                    arr[y + 1, x - 1] = clamp01(arr[y + 1, x - 1] + err * (3.0 / 16.0))
+                arr[y + 1, x] = clamp01(arr[y + 1, x] + err * (5.0 / 16.0))
+                if x + 1 < w:
+                    arr[y + 1, x + 1] = clamp01(arr[y + 1, x + 1] + err * (1.0 / 16.0))
 
-            bit_index = y * W + x
-            byte_index = bit_index // 8
-            bit_pos = 7 - (bit_index % 8)
+    flat = out.flatten()
+    assert flat.size == W * H
 
-            if is_red:
-                # 红色像素：只打到 red plane，不参与黑白抖动，保证红字干净
-                red_buf[byte_index] |= (1 << bit_pos)
-            elif is_yellow_candidate:
-                # 黄色区域：采用 Bayer 抖动在 黄/白 之间分布，模拟浅黄底
-                d = BAYER_4x4[y % 4][x % 4]  # 0..15
-                # yellow_level 决定黄墨覆盖率（0~16），例如 9 ≈ 56%，可以按需要微调
-                yellow_level = 9
-                if d < yellow_level:
-                    yellow_buf[byte_index] |= (1 << bit_pos)
-                # 剩余部分保持白底，不落入黑 plane
-            else:
-                # 灰度 / 其他颜色：用 4x4 Bayer 做有序抖动，将 0~255 亮度映射到黑/白
-                # Y = 0.299R + 0.587G + 0.114B
-                lum = 0.299 * r + 0.587 * g + 0.114 * b  # 0..255
+    # 写 C 头文件
 
-                m = BAYER_4x4[y % 4][x % 4]  # 0..15
-                # 将 Bayer 矩阵 [0,15] 映射为 [0,255] 的阈值
-                threshold = (m + 0.5) * 255.0 / 16.0
+    # 写二进制帧缓冲
+    out_bin_path = os.path.join(OUTPUT_DIR, out_bin_name)
+    with open(out_bin_path, "wb") as f:
+        f.write(flat.tobytes())
+    print(f"[esp_render] 7C bin written: {out_bin_path}  ({flat.size} bytes)")
 
-                # 比阈值暗的点打成黑，比阈值亮的保留为白
-                if lum < threshold:
-                    black_buf[byte_index] |= (1 << bit_pos)
-                # 否则视为白，不写入任何 plane
-
-    # 1. 保存原始 RGB 预览（设计稿）
-    preview_path = os.path.join(OUTPUT_DIR, f"{basename}_preview.png")
-    img.save(preview_path)
-
-    # 2. 保存三个 bin 文件
-    with open(os.path.join(OUTPUT_DIR, f"{basename}_black.bin"), "wb") as f:
-        f.write(black_buf)
-    with open(os.path.join(OUTPUT_DIR, f"{basename}_red.bin"), "wb") as f:
-        f.write(red_buf)
-    with open(os.path.join(OUTPUT_DIR, f"{basename}_yellow.bin"), "wb") as f:
-        f.write(yellow_buf)
-
-    # 3. 用三个 plane 合成一张“墨水屏效果预览图”
+    # 生成 7C 量化后的预览图
     sim = Image.new("RGB", (W, H), WHITE)
     sim_px = sim.load()
 
+    # 将色码映射回对应 RGB
+    code_to_rgb = {code: rgb for code, rgb in PALETTE_7C}
     for y in range(H):
         for x in range(W):
-            bit_index = y * W + x
-            byte_index = bit_index // 8
-            bit_pos = 7 - (bit_index % 8)
+            code = int(out[y, x])
+            rgb = code_to_rgb.get(code, (255, 255, 255))
+            sim_px[x, y] = rgb
 
-            red_bit = (red_buf[byte_index] >> bit_pos) & 1
-            yellow_bit = (yellow_buf[byte_index] >> bit_pos) & 1
-            black_bit = (black_buf[byte_index] >> bit_pos) & 1
+    preview_path = os.path.join(OUTPUT_DIR, preview_name)
+    sim.save(preview_path)
 
-            if red_bit:
-                sim_px[x, y] = RED
-            elif yellow_bit:
-                sim_px[x, y] = YELLOW
-            elif black_bit:
-                sim_px[x, y] = BLACK
-            else:
-                sim_px[x, y] = WHITE
-
-    merged_path = os.path.join(OUTPUT_DIR, f"{basename}_merged.png")
-    sim.save(merged_path)
-
-    print(f"[esp_render] wrote {basename}: {total_bytes} bytes x 3 planes")
-    print(f"[esp_render] preview: {preview_path}")
-    print(f"[esp_render] merged : {merged_path}")
+    print(f"[esp_render] 7C preview: {preview_path}")
 
 
 # ==========================
@@ -806,9 +792,9 @@ def main():
     video_ctx = build_video_context()
 
     img = render_dashboard(account_ctx, video_ctx)
-    export_bitplanes(img, "dashboard")
+    export_dashboard_7c_bin(img)
 
-    print("[esp_render] dashboard rendered.")
+    print("[esp_render] dashboard rendered & 7C bin generated.")
 
 
 if __name__ == "__main__":

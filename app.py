@@ -1,7 +1,7 @@
 # app.py
 
-from flask import Flask, jsonify, request, send_from_directory
-
+from flask import Flask, jsonify, request, send_from_directory, send_file
+import os
 from config import MY_MID
 from db import (
     init_db,
@@ -219,6 +219,17 @@ def api_esp32_full():
         "videos": videos
     })
 
+@app.route("/api/esp32/dashboard.bin")
+def api_esp32_dashboard_bin():
+    """
+    提供给 ESP32 的 800x480 7C 原始帧缓冲（二进制）：
+    - 格式：GoodDisplay/GxEPD2 7色编码，每像素 1 字节（0xFF/0x00/0xE5/0xFC...）
+    - 尺寸：800 * 480 字节
+    """
+    bin_path = os.path.join("esp_output", "dashboard7c_800x480.bin")
+    if not os.path.exists(bin_path):
+        return jsonify({"error": "dashboard bin not found"}), 404
+    return send_file(bin_path, mimetype="application/octet-stream", as_attachment=False)
 
 # ===== ESP32 简化接口 =====
 
