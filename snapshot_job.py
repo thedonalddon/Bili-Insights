@@ -16,14 +16,7 @@ def safe_fetch_video_info(
     retries: int = 3,
     delay: float = 1.0,
 ) -> Optional[Dict[str, Any]]:
-    """
-    对 fetch_video_info 做一层带重试的封装：
-    - 网络波动 / SSL EOF / requests 异常 时重试几次
-    - 超过重试次数仍失败则返回 None
-    日志：
-    - 每次失败打印尝试次数和异常
-    - 最终失败打印一条 error
-    """
+
     last_err: Optional[Exception] = None
     for attempt in range(1, retries + 1):
         try:
@@ -45,20 +38,7 @@ def safe_fetch_video_info(
 
 
 def run_snapshot(snapshot_date: str | None = None) -> None:
-    """
-    跑一遍快照任务：
 
-    1. 拉取当前账号所有投稿列表（BV、标题、基础播放）
-    2. 对每条 BV 调用 /x/web-interface/view 拿详细 stat
-    3. 写入 video_snapshots
-    4. 聚合所有 stat + 粉丝数，写入 account_snapshots
-
-    日志增强：
-    - 打印总稿件数
-    - 每条视频打印 "第几条 / 总数 + bvid + 标题"
-    - 失败时在 safe_fetch_video_info 里记录详情
-    - 结束时给出成功/失败汇总，并列出失败的 BV 和标题
-    """
     init_db()
 
     if snapshot_date is None:
@@ -68,7 +48,6 @@ def run_snapshot(snapshot_date: str | None = None) -> None:
     print(f"[snapshot] 开始快照 snapshot_date={snapshot_date}")
     print("[snapshot] 步骤 1：拉取投稿列表 /x/space/wbi/arc/search")
 
-    # 1. 拉投稿列表
     archives = fetch_user_archives(MY_MID)
     total_archives = len(archives)
     print(f"[snapshot] 共获取到 {total_archives} 条投稿记录。")
@@ -81,7 +60,6 @@ def run_snapshot(snapshot_date: str | None = None) -> None:
     conn = get_conn()
     cur = conn.cursor()
 
-    # 清理当天旧记录（防止重复跑）
     print("[snapshot] 步骤 2：清理当日旧快照记录（video_snapshots / account_snapshots）")
     cur.execute("DELETE FROM video_snapshots WHERE snapshot_date = ?;", (snapshot_date,))
     cur.execute("DELETE FROM account_snapshots WHERE snapshot_date = ?;", (snapshot_date,))
@@ -94,7 +72,6 @@ def run_snapshot(snapshot_date: str | None = None) -> None:
 
     print("[snapshot] 步骤 3：逐条拉取视频详细信息 /x/web-interface/view 并写入 video_snapshots")
 
-    # 2. 针对每个 BV 拉详细 stat，并写入 video_snapshots
     for idx, v in enumerate(archives, start=1):
         bvid = v.get("bvid")
         title = v.get("title") or ""
@@ -116,7 +93,6 @@ def run_snapshot(snapshot_date: str | None = None) -> None:
             )
             continue
 
-        # 从 info 中解析字段
         detail_title = info.get("title") or title
         pubdate = info.get("pubdate")
         duration = info.get("duration")
@@ -163,7 +139,6 @@ def run_snapshot(snapshot_date: str | None = None) -> None:
             )
             continue
 
-        # 累加账号维度
         total_view += view
         total_like += like
         total_coin += coin
@@ -180,7 +155,6 @@ def run_snapshot(snapshot_date: str | None = None) -> None:
                 f"当前成功 {success_count} 条，失败 {len(failed_list)} 条。"
             )
 
-    # 3. 获取粉丝数
     print("[snapshot] 步骤 4：拉取粉丝数 /x/relation/stat")
     try:
         fans = fetch_user_fans(MY_MID)
@@ -190,7 +164,6 @@ def run_snapshot(snapshot_date: str | None = None) -> None:
         follower = 0
         failed_list.append({"bvid": None, "title": "粉丝数", "reason": f"fans_api_failed: {e}"})
 
-    # 4. 写入账号维度快照
     print("[snapshot] 步骤 5：写入账号维度快照 account_snapshots")
     try:
         cur.execute(
@@ -252,5 +225,4 @@ def run_snapshot(snapshot_date: str | None = None) -> None:
 
 
 if __name__ == "__main__":
-    # 手动执行一次快照
     run_snapshot()

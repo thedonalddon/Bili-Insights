@@ -14,7 +14,6 @@ from db import (
 
 app = Flask(__name__)
 
-# 启动时初始化数据库
 with app.app_context():
     init_db()
 
@@ -23,19 +22,13 @@ with app.app_context():
 
 @app.route("/")
 def index():
-    """返回前端单页应用"""
     return send_from_directory("static", "index.html")
 
 
-# ===== 账号维度 API =====
+# ===== 账号 API =====
 
 @app.route("/api/account/profile")
 def api_account_profile():
-    """
-    为了兼容旧调用，仍然保留这个接口，但不再去调 space.acc.info：
-    - 不再请求头像/昵称，避免 -799 风控
-    - 只返回 mid + 最新 snapshot + daily_diff
-    """
     latest = get_latest_account_snapshot()
     snaps = get_last_two_account_snapshots()
 
@@ -80,9 +73,6 @@ def api_account_latest():
 
 @app.route("/api/account/snapshot")
 def api_account_snapshot():
-    """
-    返回账号最新 snapshot（相当于快照表中的最新一行）
-    """
     latest = get_latest_account_snapshot()
     if not latest:
         return jsonify({"error": "no snapshot"}), 404
@@ -122,7 +112,7 @@ def api_account_history():
     return jsonify(rows)
 
 
-# ===== 视频维度 API =====
+# ===== 视频 API =====
 
 @app.route("/api/videos/latest")
 def api_videos_latest():
@@ -132,11 +122,6 @@ def api_videos_latest():
 
 @app.route("/api/videos/overview")
 def api_videos_overview():
-    """
-    返回最新 snapshot_date 的视频列表 + 派生指标：
-    - like_rate / coin_rate / fav_rate / reply_rate / danmaku_rate
-    - engagement_rate = (like+coin+favorite+reply+danmaku)/view
-    """
     rows = get_latest_video_snapshots()
     result = []
 
@@ -185,12 +170,6 @@ def api_video_history(bvid: str):
 
 @app.route("/api/esp32/full")
 def api_esp32_full():
-    """
-    提供给 ESP32 的全量数据，等同 Web 控制台：
-    - 最新账号维度数据 latest
-    - 账号日增 daily_diff
-    - 所有视频的最新快照 videos
-    """
     latest = get_latest_account_snapshot()
     snaps = get_last_two_account_snapshots()
     videos = get_latest_video_snapshots()
@@ -221,17 +200,12 @@ def api_esp32_full():
 
 @app.route("/api/esp32/dashboard.bin")
 def api_esp32_dashboard_bin():
-    """
-    提供给 ESP32 的 800x480 7C 原始帧缓冲（二进制）：
-    - 格式：GoodDisplay/GxEPD2 7色编码，每像素 1 字节（0xFF/0x00/0xE5/0xFC...）
-    - 尺寸：800 * 480 字节
-    """
     bin_path = os.path.join("esp_output", "dashboard7c_800x480.bin")
     if not os.path.exists(bin_path):
         return jsonify({"error": "dashboard bin not found"}), 404
     return send_file(bin_path, mimetype="application/octet-stream", as_attachment=False)
 
-# ===== ESP32 简化接口 =====
+# ===== ESP32 简化接口（备用） =====
 
 @app.route("/api/esp32/summary")
 def api_esp32_summary():

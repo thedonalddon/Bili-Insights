@@ -51,7 +51,7 @@ BAYER_4x4 = [
 ]
 
 OUTPUT_DIR = "esp_output"
-V_MARGIN = 18  # 分割线与内容之间的统一竖向留白
+V_MARGIN = 18
 
 
 # ==========================
@@ -103,9 +103,7 @@ def draw_round_rect(draw: ImageDraw.ImageDraw,
                     fill=None,
                     outline=None,
                     width: int = 1):
-    """
-    使用 rounded_rectangle 统一绘制圆角矩形。
-    """
+
     try:
         draw.rounded_rectangle(bbox, radius=radius, fill=fill, outline=outline, width=width)
     except AttributeError:
@@ -117,9 +115,7 @@ def draw_round_rect(draw: ImageDraw.ImageDraw,
 # ==========================
 
 def measure_text(text: str, font: ImageFont.ImageFont) -> Tuple[int, int]:
-    """
-    Pillow 新版本中不推荐使用 draw.textsize，这里统一用 font.getbbox 计算文字宽高。
-    """
+
     if not text:
         return 0, 0
     box = font.getbbox(text)  # (x0, y0, x1, y1)
@@ -135,17 +131,11 @@ def ensure_output_dir():
 
 
 def short_number(n: int) -> str:
-    """不缩写，直接返回完整数字字符串。"""
     return str(int(n))
 
 
 # 中文数字格式化（万单位）
 def format_cn_number(n: int) -> str:
-    """
-    将数字格式化为适合界面显示的形式：
-    小于 10000：原样整数
-    大于等于 10000：x.x万（去掉多余的 0 和小数点）
-    """
     n_int = int(n)
     if abs(n_int) < 10000:
         return str(n_int)
@@ -174,11 +164,7 @@ def draw_line_chart(draw: ImageDraw.ImageDraw,
                     title: str,
                     labels: List[str] = None,
                     line_color=RED):
-    """
-    在 rect 内画一条简单折线图：
-    rect: (x0, y0, x1, y1)
-    values: 按时间顺序排列的日增
-    """
+
     x0, y0, x1, y1 = rect
     if x1 <= x0 or y1 <= y0:
         return
@@ -255,7 +241,7 @@ def draw_line_chart(draw: ImageDraw.ImageDraw,
 
 
 # ==========================
-# 数据准备（全部从本地 db 读）
+# 数据准备
 # ==========================
 
 def compute_deltas(seq: List[int]) -> List[int]:
@@ -401,14 +387,13 @@ def build_video_context() -> Dict[str, Any]:
 
 
 # ==========================
-# 头像绘制（预览保留灰度，墨水屏按亮度转黑）
+# 头像绘制
 # ==========================
 
 def draw_avatar(img: Image.Image, x: int, y: int, size: int = 120):
     draw = ImageDraw.Draw(img)
-    radius = size // 6  # 适中的圆角半径
+    radius = size // 6
 
-    # 阴影（圆角）
     shadow_offset = 4
     shadow_box = (x + shadow_offset, y + shadow_offset,
                   x + size + shadow_offset, y + size + shadow_offset)
@@ -416,11 +401,9 @@ def draw_avatar(img: Image.Image, x: int, y: int, size: int = 120):
                     fill=(200, 200, 200), outline=None, width=0)
 
     if not os.path.exists(AVATAR_PATH):
-        # 占位框（圆角）
         box = (x, y, x + size, y + size)
         draw_round_rect(draw, box, radius=radius,
                         fill=None, outline=BLACK, width=2)
-        # 画个 X
         draw.line((x, y, x + size, y + size), fill=BLACK, width=2)
         draw.line((x + size, y, x, y + size), fill=BLACK, width=2)
         return
@@ -430,7 +413,6 @@ def draw_avatar(img: Image.Image, x: int, y: int, size: int = 120):
         av = av.resize((size, size), Image.LANCZOS)
         av_rgb = Image.merge("RGB", (av, av, av))
 
-        # 创建圆角 mask
         mask = Image.new("L", (size, size), 0)
         mdraw = ImageDraw.Draw(mask)
         try:
@@ -477,23 +459,18 @@ def render_dashboard(account_ctx: Dict[str, Any],
     avatar_x, avatar_y, avatar_size = 30, 18, 80
     draw_avatar(img, x=avatar_x, y=avatar_y, size=avatar_size)
 
-    # 名称 / 简介整体向左，贴近头像
     name_x = avatar_x + avatar_size + 20
     name_y = avatar_y + 8
     tagline_x = name_x
     tagline_y = avatar_y + 48
 
-    # 名称
     draw.text((name_x, name_y), ACCOUNT_NAME, font=FONT_NAME, fill=BLACK)
-    # 简介
     draw.text((tagline_x, tagline_y), ACCOUNT_INTRO, font=FONT_TAGLINE, fill=BLACK)
 
-    # 日期，与简介同一高度，右对齐
     if snapshot_date:
         w_d, h_d = measure_text(snapshot_date, FONT_DATE)
         draw.text((W - w_d - 20, tagline_y), snapshot_date, font=FONT_DATE, fill=BLACK)
 
-    # 计算 header 内容的最下边，用于统一分割线留白
     name_w, name_h = measure_text(ACCOUNT_NAME, FONT_NAME)
     tag_w, tag_h = measure_text(ACCOUNT_INTRO, FONT_TAGLINE)
     header_bottom = max(
@@ -503,7 +480,6 @@ def render_dashboard(account_ctx: Dict[str, Any],
     )
 
     header_h = header_bottom + V_MARGIN
-    # 第一条下划线
     draw.line((20, header_h, W - 20, header_h), fill=BLACK, width=1)
 
     # ===== 中段：两张综合卡片（涨粉 / 播放） =====
@@ -514,22 +490,18 @@ def render_dashboard(account_ctx: Dict[str, Any],
 
     def draw_stat_card(x0: int, y0: int, w: int, h: int,
                        title: str, total: int, inc: int, series: List[int], labels: List[str]):
-        # 阴影（圆角）
         shadow_offset = 4
         shadow_box = (x0 + shadow_offset, y0 + shadow_offset,
                       x0 + w + shadow_offset, y0 + h + shadow_offset)
         draw_round_rect(draw, shadow_box, radius=10,
                         fill=(200, 200, 200), outline=None, width=0)
 
-        # 主卡片浅黄底（圆角）
         card_box = (x0, y0, x0 + w, y0 + h)
         draw_round_rect(draw, card_box, radius=10,
                         fill=(255, 255, 220), outline=BLACK, width=2)
 
-        # 标题
         draw.text((x0 + 10, y0 + 6), title, font=FONT_METRIC_LABEL, fill=BLACK)
 
-        # 总数 & 日增：略下移，但整体压缩高度，为折线图腾出空间
         total_text = short_number(total)
         w_t, h_t = measure_text(total_text, FONT_METRIC_BIG)
         num_center_y = y0 + 50
@@ -540,11 +512,9 @@ def render_dashboard(account_ctx: Dict[str, Any],
         w_i, h_i = measure_text(inc_text, FONT_METRIC_INC)
         draw.text((x0 + w - w_i - 12, num_center_y - h_i // 2), inc_text, font=FONT_METRIC_INC, fill=RED)
 
-        # 折线图区域：整体拉高一点，利用中间空白
         chart_rect = (x0 + 10, y0 + 66, x0 + w - 10, y0 + h - 12)
         draw_line_chart(draw, chart_rect, series, "", labels=labels, line_color=RED)
 
-    # 左：涨粉卡片
     draw_stat_card(
         x0=20,
         y0=cards_top,
@@ -557,7 +527,6 @@ def render_dashboard(account_ctx: Dict[str, Any],
         labels=follower_labels_15,
     )
 
-    # 右：播放卡片
     draw_stat_card(
         x0=20 + card_w + gap_x,
         y0=cards_top,
@@ -572,7 +541,6 @@ def render_dashboard(account_ctx: Dict[str, Any],
 
     charts_bottom = cards_bottom
     second_line_y = charts_bottom + V_MARGIN
-    # 第二条分割线
     draw.line((20, second_line_y, W - 20, second_line_y), fill=BLACK, width=1)
 
     # ===== 底部：最近视频 =====
@@ -594,7 +562,6 @@ def render_dashboard(account_ctx: Dict[str, Any],
     pub_ts = int(latest_video.get("pubdate") or latest_video.get("ctime") or 0)
     pub_str = datetime.fromtimestamp(pub_ts).strftime("%Y-%m-%d") if pub_ts else ""
 
-    # 第一行：最近发布：标题（黑色） + 右侧日期
     prefix = "最近发布："
     prefix_w, _ = measure_text(prefix, FONT_METRIC_LABEL)
     max_title_w = W - 40 - 120  # 右侧预留日期宽度
@@ -612,39 +579,31 @@ def render_dashboard(account_ctx: Dict[str, Any],
 
     def draw_metric_small_card(x0: int, y0: int, w: int, h: int,
                                label: str, total: int, inc: int):
-        # 阴影（圆角）
         shadow_offset = 3
         shadow_box = (x0 + shadow_offset, y0 + shadow_offset,
                       x0 + w + shadow_offset, y0 + h + shadow_offset)
         draw_round_rect(draw, shadow_box, radius=8,
                         fill=(200, 200, 200), outline=None, width=0)
 
-        # 主卡片浅黄底（圆角）
         card_box = (x0, y0, x0 + w, y0 + h)
         draw_round_rect(draw, card_box, radius=8,
                         fill=(255, 255, 220), outline=BLACK, width=1)
 
-        # 左侧标签：小号文字 + 方形边框（播 / 赞 / 币 / 藏）
         lw, lh = measure_text(label, FONT_SMALL)
         tag_pad_x = 6
-        tag_pad_y = 2  # 略减小上下 padding，让标签高度更紧凑
+        tag_pad_y = 2
         tag_x0 = x0 + 10
-        # 先让文字在整个小卡片内垂直居中，再整体下移 1px
         text_y = y0 + (h - lh) // 2 + 1
-        # 再根据文字位置反推标签矩形，使文字在矩形内同样大致居中
         tag_y0 = text_y - tag_pad_y
         tag_y1 = text_y + lh + tag_pad_y
         tag_x1 = tag_x0 + lw + 2 * tag_pad_x
 
-        # 标签外框（圆角）
         draw_round_rect(draw,
                         (tag_x0, tag_y0, tag_x1, tag_y1),
                         radius=6, fill=None, outline=BLACK, width=1)
-        # 标签文字
         text_x = tag_x0 + tag_pad_x
         draw.text((text_x, text_y), label, font=FONT_SMALL, fill=BLACK)
 
-        # 总数（紧挨标签，略大） & 日增（右侧，小一点）
         total_text = format_cn_number(total)
         sign = "+" if inc >= 0 else ""
         inc_text = f"{sign}{inc}"
@@ -664,13 +623,12 @@ def render_dashboard(account_ctx: Dict[str, Any],
         return int(metric_deltas.get(field) or 0)
 
     card_h = 48
-    total_width = W - 40  # 左右各留 20px
+    total_width = W - 40
     gap_x = 20
     card_w = int((total_width - 3 * gap_x) / 4)
     start_x = 20
     start_y = metrics_y1
 
-    # 四个小方块：播 / 赞 / 币 / 藏
     labels = ["播", "赞", "币", "藏"]
     totals = [view, like, coin, fav]
     fields = ["view", "like", "coin", "favorite"]
@@ -681,8 +639,6 @@ def render_dashboard(account_ctx: Dict[str, Any],
 
     metrics_bottom = start_y + card_h
 
-    # 底部保留一定留白，避免画面过于拥挤
-    # （如后续想利用这块区域再添加元素，可以在这里扩展）
     return img
 
 
@@ -708,20 +664,13 @@ PALETTE_7C = [
 def export_dashboard_7c_bin(img: Image.Image,
                             out_bin_name: str = "dashboard7c_800x480.bin",
                             preview_name: str = "dashboard7c_preview.png"):
-    """
-    将 RGB 仪表盘图像量化为 GoodDisplay / GxEPD2 7C 专用格式（1 byte / pixel 色码），
-    输出：
-      - esp_output/{out_bin_name} : 原始 7C 帧缓冲二进制（800*480 字节）
-      - esp_output/{preview_name} : 使用 7C 调色板重新着色后的预览 PNG
-    """
-    # 保存一份原始预览（完整 RGB）
+
     preview_rgb_path = os.path.join(OUTPUT_DIR, "dashboard_preview.png")
     img_rgb = img.convert("RGB")
     if img_rgb.size != (W, H):
         img_rgb = img_rgb.resize((W, H), Image.LANCZOS)
     img_rgb.save(preview_rgb_path)
 
-    # 准备量化输入
     arr = np.asarray(img_rgb, dtype=np.float32) / 255.0  # H x W x 3
 
     codes = np.array([c for c, _rgb in PALETTE_7C], dtype=np.uint8)
@@ -730,7 +679,6 @@ def export_dashboard_7c_bin(img: Image.Image,
     h, w, _ = arr.shape
     out = np.zeros((h, w), dtype=np.uint8)
 
-    # Floyd–Steinberg 抖动
     for y in range(h):
         if y % 40 == 0:
             print(f"[esp_render] dither row {y}/{h}")
@@ -755,19 +703,15 @@ def export_dashboard_7c_bin(img: Image.Image,
     flat = out.flatten()
     assert flat.size == W * H
 
-    # 写 C 头文件
 
-    # 写二进制帧缓冲
     out_bin_path = os.path.join(OUTPUT_DIR, out_bin_name)
     with open(out_bin_path, "wb") as f:
         f.write(flat.tobytes())
     print(f"[esp_render] 7C bin written: {out_bin_path}  ({flat.size} bytes)")
 
-    # 生成 7C 量化后的预览图
     sim = Image.new("RGB", (W, H), WHITE)
     sim_px = sim.load()
 
-    # 将色码映射回对应 RGB
     code_to_rgb = {code: rgb for code, rgb in PALETTE_7C}
     for y in range(H):
         for x in range(W):
