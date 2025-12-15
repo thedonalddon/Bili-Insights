@@ -9,15 +9,21 @@
 
 #include <GxEPD2_7C.h>
 
+// === 新增：GPIO isolate/hold 需要的头文件 ===
+#include "driver/gpio.h"
+#include "driver/rtc_io.h"
+
 // =======================
 //  调试开关（需要串口时改成 1）
 // =======================
-#define DEBUG_LOG 0
+#define DEBUG_LOG 1
 
 #if DEBUG_LOG
-  #define DBG_BEGIN()    Serial.begin(115200)
-  #define DBG_PRINT(x)   Serial.print(x)
-  #define DBG_PRINTLN(x) Serial.println(x)
+  // 强制走 UART0，这个口和 ROM 的启动信息是同一个物理串口
+  #define DBG_PORT      Serial0
+  #define DBG_BEGIN()    DBG_PORT.begin(115200)
+  #define DBG_PRINT(x)   DBG_PORT.print(x)
+  #define DBG_PRINTLN(x) DBG_PORT.println(x)
 #else
   #define DBG_BEGIN()
   #define DBG_PRINT(x)
@@ -37,13 +43,13 @@
 static const int EPD_WIDTH  = 800;
 static const int EPD_HEIGHT = 480;
 
-// 你现在的接线：4, 5, 6, 7, 15, 16
-#define PIN_EPD_BUSY 4
-#define PIN_EPD_RST  5
-#define PIN_EPD_DC   6
-#define PIN_EPD_CS   7
-#define PIN_EPD_SCLK 15
-#define PIN_EPD_DIN  16
+// ESP32-S3-N8R8 核心板
+#define PIN_EPD_BUSY 14
+#define PIN_EPD_RST  13
+#define PIN_EPD_DC   12
+#define PIN_EPD_CS   11
+#define PIN_EPD_SCLK 10
+#define PIN_EPD_DIN  9
 
 // GDEY073D46 / EL073TS3（7.3" 7C）
 GxEPD2_7C<
@@ -115,6 +121,10 @@ void saveConfig(const Config &cfg) {
   prefs.putUChar("hour", cfg.refresh_hour);
   prefs.putBool("rot180", cfg.rotate180);
   prefs.end();
+
+#if DEBUG_LOG
+  DBG_PRINT("[SAVE] rotate180="); DBG_PRINTLN(cfg.rotate180 ? "true" : "false");
+#endif
 }
 
 // =======================
@@ -314,105 +324,97 @@ bool syncTime(const Config &cfg, struct tm &outLocal) {
 }
 
 // =======================
-//  HTTP 下载 dashboard.bin 到 PSRAM
+//  EPD 相关：睡眠前断开 IO（防反灌/悬空）
 // =======================
-uint8_t* framebuffer = nullptr;
+void powerDownEPD() {
+  // 先设成输入
+  pinMode(PIN_EPD_BUSY, INPUT);
+  pinMode(PIN_EPD_RST,  INPUT);
+  pinMode(PIN_EPD_DC,   INPUT);
+  pinMode(PIN_EPD_CS,   INPUT);
+  pinMode(PIN_EPD_SCLK, INPUT);
+  pinMode(PIN_EPD_DIN,  INPUT);
 
-bool downloadDashboardBin(const Config &cfg) {
-  size_t target = (size_t)EPD_WIDTH * EPD_HEIGHT; // 384000 bytes
+  // 再给一个明确的下拉，减少悬空导致的漏电（经验做法）
+  pinMode(PIN_EPD_BUSY, INPUT_PULLDOWN);
+  pinMode(PIN_EPD_RST,  INPUT_PULLDOWN);
+  pinMode(PIN_EPD_DC,   INPUT_PULLDOWN);
+  pinMode(PIN_EPD_CS,   INPUT_PULLDOWN);
+  pinMode(PIN_EPD_SCLK, INPUT_PULLDOWN);
+  pinMode(PIN_EPD_DIN,  INPUT_PULLDOWN);
+}
 
-  if (!framebuffer) {
-    // 优先用 PSRAM
-    framebuffer = (uint8_t*)heap_caps_malloc(
-      target,
-      MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM
-    );
-    if (!framebuffer) {
-      // 兜底用内部 RAM（理论上不太够，但保留）
-      framebuffer = (uint8_t*)heap_caps_malloc(target, MALLOC_CAP_8BIT);
-    }
-  }
-  if (!framebuffer) return false;
+// =======================
+//  Deep Sleep 前：GPIO disable/pulldown/hold + RTC isolate
+// =======================
 
-  // 构造 URL: http://host:port/api/esp32/dashboard.bin
-  String url;
-  String hp = cfg.backend_hostport;
-  hp.trim();
-  if (hp.startsWith("http://") || hp.startsWith("https://")) {
-    url = hp;
-  } else {
-    url = "http://" + hp + "/api/esp32/dashboard.bin";
-  }
+static bool shouldSkipGpioForSleep(int gpio) {
+  // LED
+  if (gpio == LED_BUILTIN) return true;
 
-  HTTPClient http;
-  http.begin(url);
-  int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    http.end();
-    return false;
-  }
+  // EPD 脚单独处理
+  if (gpio == PIN_EPD_BUSY) return true;
+  if (gpio == PIN_EPD_RST)  return true;
+  if (gpio == PIN_EPD_DC)   return true;
+  if (gpio == PIN_EPD_CS)   return true;
+  if (gpio == PIN_EPD_SCLK) return true;
+  if (gpio == PIN_EPD_DIN)  return true;
 
-  int len = http.getSize();
-  WiFiClient *stream = http.getStreamPtr();
-  size_t total = 0;
+  // UART0（常见 IO43/IO44），你在用 Serial0：保守不动
+  if (gpio == 43 || gpio == 44) return true;
 
-  while (http.connected() && (len > 0 || len == -1) && total < target) {
-    size_t avail = stream->available();
-    if (avail) {
-      size_t toRead = avail;
-      if (toRead > target - total) toRead = target - total;
-      int r = stream->read(framebuffer + total, toRead);
-      if (r > 0) {
-        total += r;
-        if (len > 0) len -= r;
-      }
-    } else {
-      delay(1);
-    }
-  }
+  // USB D+/D-（常见 IO19/IO20），保守不动
+  if (gpio == 19 || gpio == 20) return true;
 
-  http.end();
+  // strap 脚（经验避坑）
+  if (gpio == 0 || gpio == 45 || gpio == 46) return true;
 
-  if (total != target) {
+  return false;
+}
+
+static void deepSleepIsolateAndHoldGPIO() {
 #if DEBUG_LOG
-    DBG_PRINT("[HTTP] size mismatch, expect=");
-    DBG_PRINT((int)target);
-    DBG_PRINT(" got=");
-    DBG_PRINTLN((int)total);
+  DBG_PRINTLN("[SLEEP] isolate/hold GPIO start");
 #endif
-    return false;
+
+  // 先 hold EPD 脚（我们希望它们在 sleep 期间稳定保持“下拉输入”）
+  const int epdPins[] = { PIN_EPD_BUSY, PIN_EPD_RST, PIN_EPD_DC, PIN_EPD_CS, PIN_EPD_SCLK, PIN_EPD_DIN };
+  for (size_t i = 0; i < sizeof(epdPins)/sizeof(epdPins[0]); ++i) {
+    int gpio = epdPins[i];
+    gpio_num_t gn = (gpio_num_t)gpio;
+
+    if (!GPIO_IS_VALID_GPIO(gn)) continue;
+
+    gpio_set_direction(gn, GPIO_MODE_INPUT);
+    gpio_pulldown_en(gn);
+    gpio_pullup_dis(gn);
+    gpio_hold_en(gn);
+
+    if (rtc_gpio_is_valid_gpio(gn)) {
+      rtc_gpio_isolate(gn);
+    }
   }
 
-  return true;
-}
+  // 再处理其它 GPIO：disable + 下拉 + hold
+  for (int gpio = 0; gpio <= 48; ++gpio) {
+    if (shouldSkipGpioForSleep(gpio)) continue;
 
-// =======================
-//  墨水屏显示
-// =======================
-void initDisplay(const Config &cfg) {
-  SPI.end();
-  SPI.begin(PIN_EPD_SCLK, -1 /*MISO*/, PIN_EPD_DIN, PIN_EPD_CS);
+    gpio_num_t gn = (gpio_num_t)gpio;
+    if (!GPIO_IS_VALID_GPIO(gn)) continue;
 
-  // 0 = 无串口输出
-  display.init(0, true, 2, false);
-  if (cfg.rotate180) {
-    display.setRotation(3);
-  } else {
-    display.setRotation(1);
+    gpio_set_direction(gn, GPIO_MODE_DISABLE);
+    gpio_pulldown_en(gn);
+    gpio_pullup_dis(gn);
+    gpio_hold_en(gn);
+
+    if (rtc_gpio_is_valid_gpio(gn)) {
+      rtc_gpio_isolate(gn);
+    }
   }
-}
 
-void drawFromFramebuffer() {
-  display.setFullWindow();
-  display.epd2.drawDemoBitmap(
-    framebuffer,
-    0, 0, 0,
-    EPD_WIDTH, EPD_HEIGHT,
-    0,
-    false,
-    false   // 数据在 RAM
-  );
-  display.hibernate();
+#if DEBUG_LOG
+  DBG_PRINTLN("[SLEEP] isolate/hold GPIO done");
+#endif
 }
 
 // =======================
@@ -436,12 +438,19 @@ void goDeepSleepMinutes(uint32_t minutes) {
 
   uint64_t us = (uint64_t)minutes * 60ULL * 1000000ULL;
 
+  // 睡前把 EPD IO 收口（否则屏板可能通过 IO 反灌/上拉把你拖到 mA）
+  powerDownEPD();
+
   // 关 WiFi / BT
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
 #if defined(BLUEFRUIT_FEATHER) || defined(CONFIG_BT_ENABLED)
   btStop();
 #endif
+
+  // === 新增：GPIO isolate/hold（在关 RTC 域之前做） ===
+  deepSleepIsolateAndHoldGPIO();
+
   prepareDeepSleepDomains();
   esp_sleep_enable_timer_wakeup(us);
   esp_deep_sleep_start();
@@ -470,12 +479,170 @@ void sleepUntilNextSchedule(const Config &cfg, bool hasTime, const struct tm &no
 }
 
 // =======================
+//  HTTP 下载 dashboard.bin 到 PSRAM
+// =======================
+uint8_t* framebuffer = nullptr;
+
+bool downloadDashboardBin(const Config &cfg) {
+  size_t target = (size_t)EPD_WIDTH * EPD_HEIGHT; // 800*480 = 384000 bytes
+
+  if (!framebuffer) {
+#if DEBUG_LOG
+    DBG_PRINT("[FB] malloc framebuffer size="); DBG_PRINTLN((int)target);
+#endif
+    // 优先用 PSRAM
+    framebuffer = (uint8_t*)heap_caps_malloc(
+      target,
+      MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM
+    );
+    if (!framebuffer) {
+#if DEBUG_LOG
+      DBG_PRINTLN("[FB] malloc PSRAM failed, try internal RAM");
+#endif
+      framebuffer = (uint8_t*)heap_caps_malloc(target, MALLOC_CAP_8BIT);
+    }
+  }
+  if (!framebuffer) {
+#if DEBUG_LOG
+    DBG_PRINTLN("[FB] framebuffer malloc FAILED");
+#endif
+    return false;
+  }
+
+  // 构造 URL: http://host:port/api/esp32/dashboard.bin
+  String url;
+  String hp = cfg.backend_hostport;
+  hp.trim();
+  if (hp.startsWith("http://") || hp.startsWith("https://")) {
+    url = hp;
+  } else {
+    url = "http://" + hp + "/api/esp32/dashboard.bin";
+  }
+
+#if DEBUG_LOG
+  DBG_PRINT("[HTTP] GET "); DBG_PRINTLN(url);
+#endif
+
+  HTTPClient http;
+  http.begin(url);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+#if DEBUG_LOG
+    DBG_PRINT("[HTTP] code="); DBG_PRINTLN(code);
+#endif
+    http.end();
+    return false;
+  }
+
+  int len = http.getSize();
+#if DEBUG_LOG
+  DBG_PRINT("[HTTP] content-length="); DBG_PRINTLN(len);
+#endif
+
+  WiFiClient *stream = http.getStreamPtr();
+  size_t total = 0;
+
+  const uint32_t DOWNLOAD_TIMEOUT_MS = 60 * 1000;
+  uint32_t start_ms = millis();
+
+  while (http.connected() && (len > 0 || len == -1) && total < target) {
+    if (millis() - start_ms > DOWNLOAD_TIMEOUT_MS) {
+#if DEBUG_LOG
+      DBG_PRINTLN("[HTTP] download timeout, go deep sleep 24h");
+#endif
+      http.end();
+      goDeepSleepMinutes(24 * 60);
+      return false;
+    }
+
+    size_t avail = stream->available();
+    if (avail) {
+      size_t toRead = avail;
+      if (toRead > target - total) toRead = target - total;
+      int r = stream->read(framebuffer + total, toRead);
+      if (r > 0) {
+        total += r;
+        if (len > 0) len -= r;
+      }
+    } else {
+      delay(1);
+    }
+  }
+
+  http.end();
+
+#if DEBUG_LOG
+  DBG_PRINT("[HTTP] total read="); DBG_PRINTLN((int)total);
+#endif
+
+  if (total != target) {
+#if DEBUG_LOG
+    DBG_PRINT("[HTTP] size mismatch, expect=");
+    DBG_PRINT((int)target);
+    DBG_PRINT(" got=");
+    DBG_PRINTLN((int)total);
+#endif
+    return false;
+  }
+
+  if (cfg.rotate180) {
+#if DEBUG_LOG
+    DBG_PRINTLN("[ROT] applying 180-degree rotation to framebuffer");
+#endif
+    size_t i = 0;
+    size_t j = target - 1;
+    while (i < j) {
+      uint8_t tmp      = framebuffer[i];
+      framebuffer[i]   = framebuffer[j];
+      framebuffer[j]   = tmp;
+      ++i;
+      --j;
+    }
+  }
+
+  return true;
+}
+
+// =======================
+//  墨水屏显示
+// =======================
+void initDisplay(const Config &cfg) {
+  SPI.end();
+  SPI.begin(PIN_EPD_SCLK, -1 /*MISO*/, PIN_EPD_DIN, PIN_EPD_CS);
+
+  display.init(0, true, 2, false);
+
+#if DEBUG_LOG
+  DBG_PRINT("[EPD] rotate180="); DBG_PRINTLN(cfg.rotate180 ? "true" : "false");
+#endif
+
+  if (cfg.rotate180) {
+    display.setRotation(3);
+  } else {
+    display.setRotation(1);
+  }
+}
+
+void drawFromFramebuffer() {
+  display.setFullWindow();
+  display.epd2.drawDemoBitmap(
+    framebuffer,
+    0, 0, 0,
+    EPD_WIDTH, EPD_HEIGHT,
+    0,
+    false,
+    false
+  );
+  display.hibernate();
+}
+
+// =======================
 //  setup / loop
 // =======================
 void setup() {
   setCpuFrequencyMhz(80);
   pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, LOW);  // 熄灯
+  digitalWrite(LED_BUILTIN, LOW);
 
   DBG_BEGIN();
 #if DEBUG_LOG
@@ -485,28 +652,22 @@ void setup() {
   loadConfig(g_cfg);
 
   if (!g_cfg.valid) {
-    // 首次启动 / 无配置 → AP 配置模式
     startConfigPortal(); // 不返回
   }
 
-  // 有配置 → 连 WiFi
   if (!connectWiFi(g_cfg)) {
-    // 连不上就进入 AP 配置模式（方便改 WiFi）
     startConfigPortal(); // 不返回
   }
 
-  // NTP 同步时间（用于下一次唤醒时间计算）
   struct tm timeinfo;
   bool hasTime = syncTime(g_cfg, timeinfo);
 
-  // 上电必刷一次
   bool ok = downloadDashboardBin(g_cfg);
   if (ok) {
     initDisplay(g_cfg);
     drawFromFramebuffer();
   }
 
-  // 刷完后直接算下次唤醒时间并 deep sleep
   if (!hasTime) {
     struct tm tmp;
     if (syncTime(g_cfg, tmp)) {
