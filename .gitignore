@@ -15,11 +15,15 @@ venv/
 # Sensitive config
 config.py
 
-# Database (你的隐私数据)
+# Database
 *.db
-esp32/resources/
-esp32/example/
-esp_output/
 
 # Logs
 *.log
+
+# Others
+esp32/resources/
+esp32/example/
+esp_output/
+esp32/src/ink-display-420C
+esp_render_4in2.py
