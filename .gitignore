@@ -27,3 +27,4 @@ esp32/example/
 esp_output/
 esp32/src/ink-display-420C
 esp_render_4in2.py
+smoke_test.py

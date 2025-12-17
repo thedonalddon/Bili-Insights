@@ -1,19 +1,5 @@
 #!/usr/bin/env python3
 # esp_render.py
-#
-# 生成单页 800x480 四色墨水屏仪表盘：
-# - 顶部：头像 + 账号名 + 简介 + 日期
-# - 核心数据：总粉丝 / 总播放 + 今日增量
-# - 图表：近 15 日涨粉 / 播放（日增）
-# - 最近视频：标题、BV、发布日期、七个指标（总数 + 日增）+ 近 7 日播放日增折线
-#
-# 输出：
-#   esp_output/dashboard_preview.png        # 原始 RGB 预览
-#   esp_output/dashboard7c_preview.png      # 7C 调色板量化后的预览
-#   esp_output/dashboard7c_800x480.bin      # 给 ESP32 下载的原始 7C 帧缓冲（800*480 字节）
-#
-# 依赖：Pillow
-#   pip install pillow
 
 import os
 from typing import Dict, Any, List, Tuple
@@ -42,7 +28,6 @@ BLACK = (0, 0, 0)
 RED = (255, 0, 0)
 YELLOW = (255, 255, 0)
 
-# 简单 4x4 Bayer 抖动矩阵，用于灰度 → 黑白抖动
 BAYER_4x4 = [
     [0, 8, 2, 10],
     [12, 4, 14, 6],
@@ -143,6 +128,13 @@ def format_cn_number(n: int) -> str:
     val = abs(n_int) / 10000.0
     txt = f"{val:.1f}".rstrip("0").rstrip(".")
     return f"{sign}{txt}万"
+
+# 中文增量格式化（万单位，保留正负号）
+def format_cn_delta(n: int) -> str:
+    n_int = int(n)
+    sign = "+" if n_int >= 0 else "-"
+    body = format_cn_number(abs(n_int))
+    return f"{sign}{body}"
 
 
 def trunc_text(draw: ImageDraw.ImageDraw, text: str,
@@ -507,8 +499,7 @@ def render_dashboard(account_ctx: Dict[str, Any],
         num_center_y = y0 + 50
         draw.text((x0 + 10, num_center_y - h_t // 2), total_text, font=FONT_METRIC_BIG, fill=BLACK)
 
-        sign = "+" if inc >= 0 else ""
-        inc_text = f"{sign}{inc}"
+        inc_text = format_cn_delta(inc)
         w_i, h_i = measure_text(inc_text, FONT_METRIC_INC)
         draw.text((x0 + w - w_i - 12, num_center_y - h_i // 2), inc_text, font=FONT_METRIC_INC, fill=RED)
 
@@ -605,8 +596,7 @@ def render_dashboard(account_ctx: Dict[str, Any],
         draw.text((text_x, text_y), label, font=FONT_SMALL, fill=BLACK)
 
         total_text = format_cn_number(total)
-        sign = "+" if inc >= 0 else ""
-        inc_text = f"{sign}{inc}"
+        inc_text = format_cn_delta(inc)
 
         w_t, h_t = measure_text(total_text, FONT_METRIC_LABEL)
         w_i, h_i = measure_text(inc_text, FONT_SMALL)

@@ -81,9 +81,9 @@ mv config-example.py config.py
 
 运行后会在 `esp_output/` 目录下生成：
 
-- dashboard_preview.png：原始 RGB 预览图；
-- dashboard7c_preview.png：量化到 7C 调色板后的预览图；
-- dashboard7c_800x480.bin：给 ESP32 下载的原始 7C 帧缓冲（800×480，每像素 1 字节色码）。
+- dashboard_preview.png：原始 RGB 预览图（可选）；
+- dashboard7c_preview.png：量化到 7C 调色板后的预览图（可选）；
+- dashboard7c_800x480.bin：供 ESP32 下载的帧缓冲文件。
 
 2. 从 ES232 中拉取 bin 文件并显示在墨水屏上。  
 详见 [esp32/README.md](https://github.com/thedonalddon/Bili-Insights/tree/main/esp32/)

@@ -1,4 +1,5 @@
 # bili_api.py
+# 本项目参考了 bilibili-API-collect 项目中的 API：https://github.com/SocialSisterYi/bilibili-API-collect
 
 import time
 import hashlib
@@ -74,7 +75,6 @@ _WBI_KEYS_TTL = 3600  # 1h
 
 
 def _get_wbi_keys() -> Tuple[str, str]:
-    """从 nav 拉取 img_key / sub_key，带 Cookie 更接近真实浏览器环境。"""
     global _WBI_KEYS, _WBI_KEYS_TS
     now = time.time()
 
@@ -109,10 +109,7 @@ def fetch_user_archives(
     max_pages: int = 100,
     sleep_sec: float = 0.5,
 ) -> List[Dict[str, Any]]:
-    """
-    拉取指定 mid 所有投稿（分页遍历）。
-    返回原始 vlist 列表，每个元素包含 bvid/title/created/play/comment 等。
-    """
+
     img_key, sub_key = _get_wbi_keys()
     all_videos: List[Dict[str, Any]] = []
 
@@ -176,7 +173,7 @@ def fetch_user_archives(
 
 
 # =============================
-# /x/web-interface/view：单视频详细信息（stat 七要素）
+# 单视频详细信息
 # =============================
 
 def fetch_video_info(bvid: str) -> Dict[str, Any]:
@@ -201,7 +198,7 @@ def fetch_video_info(bvid: str) -> Dict[str, Any]:
 
 
 # =============================
-# /x/relation/stat：粉丝数
+# 粉丝数
 # =============================
 
 def fetch_user_fans(mid: int) -> Dict[str, Any]:
@@ -222,7 +219,7 @@ def fetch_user_fans(mid: int) -> Dict[str, Any]:
 
 
 # =============================
-# /x/space/acc/info：UP 主资料
+#  UP 主资料
 # =============================
 
 def fetch_user_profile(mid: int) -> Dict[str, Any]:
