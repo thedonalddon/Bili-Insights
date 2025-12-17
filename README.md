@@ -48,7 +48,6 @@ ACCOUNT_INTRO = "你的 B 站账户简介"
 AVATAR_PATH = "esp32/resources/你的 B 站账户头像.jpg"
 ```
 - *Cookie 可以用浏览器登录B站后，自行从开发者模式中获取。*  
-- *进阶方案（更推荐）：可在服务端上安装浏览器，并登录一个真实的B站账号，再使用 browser_cookie3 库获取Cookie，定期写入 config.py 文件中。*
 
 3. 将 config-example.py 改名为 config.py：
 ```
@@ -87,7 +86,7 @@ mv config-example.py config.py
 - dashboard7c_800x480.bin：给 ESP32 下载的原始 7C 帧缓冲（800×480，每像素 1 字节色码）。
 
 2. 从 ES232 中拉取 bin 文件并显示在墨水屏上。  
-详见 ```esp32/README.md```。
+详见 [esp32/README.md](https://github.com/thedonalddon/Bili-Insights/tree/main/esp32/)
 
 ## 服务器部署与定时任务示例（可选）
 

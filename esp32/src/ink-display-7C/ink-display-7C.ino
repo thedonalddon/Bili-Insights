@@ -8,8 +8,10 @@
 #include "esp_system.h"
 
 #include <GxEPD2_7C.h>
+#include <HardwareSerial.h>
+#include "esp_wifi.h"
+#include "esp_bt.h"
 
-// === 新增：GPIO isolate/hold 需要的头文件 ===
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
 
@@ -18,12 +20,12 @@
 // =======================
 #define DEBUG_LOG 1
 
+HardwareSerial DebugSerial(0);
+
 #if DEBUG_LOG
-  // 强制走 UART0，这个口和 ROM 的启动信息是同一个物理串口
-  #define DBG_PORT      Serial0
-  #define DBG_BEGIN()    DBG_PORT.begin(115200)
-  #define DBG_PRINT(x)   DBG_PORT.print(x)
-  #define DBG_PRINTLN(x) DBG_PORT.println(x)
+  #define DBG_BEGIN()    DebugSerial.begin(115200)
+  #define DBG_PRINT(x)   DebugSerial.print(x)
+  #define DBG_PRINTLN(x) DebugSerial.println(x)
 #else
   #define DBG_BEGIN()
   #define DBG_PRINT(x)
@@ -38,7 +40,20 @@
 #endif
 
 // =======================
-//  墨水屏参数 & 引脚
+//  “恢复出厂”按键：GPIO38 + RESET（只在开机/复位瞬间检查）
+//  规则：上电/复位时 GPIO38 = LOW -> 清 NVS 中的 WiFi/配置，并进入 AP 配网
+// =======================
+#define PIN_FACTORY_RESET 38
+#define FACTORY_RESET_ACTIVE_LOW 1
+static const uint32_t FACTORY_RESET_SAMPLE_DELAY_MS = 5;
+
+// =======================
+//  AP 配置页保底：进入 AP 后 X 分钟没保存配置 -> 睡到“下一个刷新点”
+// =======================
+static const uint32_t AP_TIMEOUT_MS = 5UL * 60UL * 1000UL; // 5 分钟
+
+// =======================
+//  墨水屏参数 & 引脚（Bili 看板：横屏 800x480）
 // =======================
 static const int EPD_WIDTH  = 800;
 static const int EPD_HEIGHT = 480;
@@ -65,27 +80,119 @@ GxEPD2_7C<
 );
 
 // =======================
+//  Bili Dashboard BIN 路径
+// =======================
+#define DASHBOARD_PATH "/api/esp32/dashboard.bin"
+
+// =======================
 //  配置存储 / WiFi / WebServer
 // =======================
 Preferences prefs;
-WebServer server(80);
+WebServer  server(80);
 
 struct Config {
   String  wifi_ssid;
   String  wifi_pass;
-  String  backend_hostport;  // m.daihongtao.com:8765
+  String  backend_hostport;  // host:port 或 http(s)://host:port
   int32_t tz_offset_hours;   // 时区偏移（整数小时），默认 8
   uint8_t refresh_hour;      // 每天的整点小时 0-23
   bool    rotate180;         // 是否旋转 180°
   bool    valid;
 };
 
-// 默认：东八区，每天 8 点刷一次
-const char*  DEFAULT_HOSTPORT = "m.daihongtao.com:8765";
+// 服务器默认空（不泄露隐私）
+const char*  DEFAULT_HOSTPORT = "";
 const int32_t DEFAULT_TZ      = 8;
 const uint8_t DEFAULT_HOUR    = 8;
 
 Config g_cfg;
+uint8_t* framebuffer = nullptr;
+
+// =======================
+//  启动 hold 的“解锁”：防止上次 deep sleep hold 把自己锁死
+// =======================
+static void releaseAllGpioHoldsAtBoot() {
+  gpio_deep_sleep_hold_dis();
+  for (int gpio = 0; gpio <= 48; ++gpio) {
+    gpio_num_t gn = (gpio_num_t)gpio;
+    if (!GPIO_IS_VALID_GPIO(gn)) continue;
+    gpio_hold_dis(gn);
+    if (rtc_gpio_is_valid_gpio(gn)) rtc_gpio_hold_dis(gn);
+  }
+}
+
+// =======================
+//  NVS：清空 dashcfg namespace（只在开机瞬间 GPIO38 低电平时调用）
+// =======================
+static void clearConfigNVS() {
+#if DEBUG_LOG
+  DBG_PRINTLN("[NVS] clearConfigNVS()");
+#endif
+  prefs.begin("dashcfg", false);
+  prefs.clear();
+  prefs.end();
+}
+
+// =======================
+//  工厂复位检测：只在 setup 开头采样一次
+// =======================
+static bool isFactoryResetRequestedAtBoot() {
+  pinMode(PIN_FACTORY_RESET, INPUT_PULLUP);
+  delay(FACTORY_RESET_SAMPLE_DELAY_MS);
+#if FACTORY_RESET_ACTIVE_LOW
+  return (digitalRead(PIN_FACTORY_RESET) == LOW);
+#else
+  return (digitalRead(PIN_FACTORY_RESET) == HIGH);
+#endif
+}
+
+// =======================
+//  保存“上次成功 NTP 的时间”（epoch 秒）到 NVS
+//  用途：AP 超时后按“下一个 refresh_hour”去睡（没网时只能近似）
+// =======================
+static void saveLastTimeEpoch(time_t epoch) {
+  prefs.begin("dashcfg", false);
+  prefs.putULong("last_epoch", (uint32_t)epoch);
+  prefs.end();
+#if DEBUG_LOG
+  DBG_PRINT("[TIME] save last_epoch="); DBG_PRINTLN((uint32_t)epoch);
+#endif
+}
+
+static bool loadLastTimeEpoch(time_t &epochOut) {
+  prefs.begin("dashcfg", true);
+  uint32_t v = prefs.getULong("last_epoch", 0);
+  prefs.end();
+  if (v == 0) return false;
+  epochOut = (time_t)v;
+  return true;
+}
+
+// =======================
+//  计算“从 last_epoch 推断的 now”到下一个 refresh_hour 的分钟数
+//  注意：没网时只能近似（基于经验/常识的推断）
+// =======================
+static uint32_t minutesToNextRefreshFromLastEpoch(const Config &cfg) {
+  time_t lastEpoch;
+  if (!loadLastTimeEpoch(lastEpoch)) {
+    // 没任何时钟依据：直接睡 24h 防跑电
+    return 1440;
+  }
+
+  struct tm t;
+  localtime_r(&lastEpoch, &t);
+
+  int curMinOfDay = t.tm_hour * 60 + t.tm_min;
+  int targetMin   = (int)cfg.refresh_hour * 60;
+  int deltaMin;
+
+  if (curMinOfDay < targetMin) deltaMin = targetMin - curMinOfDay;
+  else                         deltaMin = 24 * 60 - (curMinOfDay - targetMin);
+
+  if (deltaMin < 1) deltaMin = 24 * 60;
+  if (deltaMin > 1440) deltaMin = 1440;
+  return (uint32_t)deltaMin;
+}
 
 // =======================
 //  配置读写
@@ -103,6 +210,7 @@ void loadConfig(Config &cfg) {
   cfg.valid = (cfg.wifi_ssid.length() > 0);
 
 #if DEBUG_LOG
+  DBG_PRINTLN("---- loadConfig ----");
   DBG_PRINT("[CFG] ssid="); DBG_PRINTLN(cfg.wifi_ssid);
   DBG_PRINT("[CFG] hostport="); DBG_PRINTLN(cfg.backend_hostport);
   DBG_PRINT("[CFG] tz_offset_hours="); DBG_PRINTLN(cfg.tz_offset_hours);
@@ -123,12 +231,12 @@ void saveConfig(const Config &cfg) {
   prefs.end();
 
 #if DEBUG_LOG
-  DBG_PRINT("[SAVE] rotate180="); DBG_PRINTLN(cfg.rotate180 ? "true" : "false");
+  DBG_PRINTLN("[CFG] saved");
 #endif
 }
 
 // =======================
-//  HTML 工具 & 配置页
+//  HTML 工具
 // =======================
 String htmlEscape(const String &s) {
   String out;
@@ -144,8 +252,37 @@ String htmlEscape(const String &s) {
   return out;
 }
 
+// =======================
+//  关键修复：进入 AP Portal 前，彻底重置 WiFi 驱动状态，保证 scan 正常（不清 NVS）
+// =======================
+static void wifiHardResetForPortal() {
+#if DEBUG_LOG
+  DBG_PRINTLN("[WIFI] wifiHardResetForPortal()");
+#endif
+  WiFi.scanDelete();
+  WiFi.disconnect(true, true);
+  WiFi.mode(WIFI_OFF);
+  delay(200);
+
+  WiFi.mode(WIFI_AP_STA);
+
+  // AP 配网：为了扫描稳定，关省电
+  WiFi.setSleep(false);
+  esp_wifi_set_ps(WIFI_PS_NONE);
+
+  WiFi.scanDelete();
+  delay(50);
+}
+
 String buildConfigPage() {
-  int n = WiFi.scanNetworks();
+  WiFi.scanDelete();
+  delay(30);
+
+  int n = WiFi.scanNetworks(/*async=*/false, /*hidden=*/true);
+
+#if DEBUG_LOG
+  DBG_PRINT("[CFG] scanNetworks n="); DBG_PRINTLN(n);
+#endif
 
   String curSsid = g_cfg.wifi_ssid;
   String host    = htmlEscape(g_cfg.backend_hostport);
@@ -155,35 +292,42 @@ String buildConfigPage() {
   if (hour > 23) hour = DEFAULT_HOUR;
   bool rot180    = g_cfg.rotate180;
 
-  String html = F(
-    "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-    "<title>Bili-Insight墨水屏设置</title></head><body>"
-    "<h2>Bili-Insight墨水屏设置</h2>"
-    "<form method='POST' action='/save'>"
-    "WiFi SSID:<br><select name='ssid'>"
-  );
+  String html;
+  html.reserve(4096);
 
-  if (n <= 0) {
-    html += F("<option value=''>未扫描到WiFi</option>");
-  } else {
+  html += F("<!DOCTYPE html><html><head><meta charset='utf-8'>");
+  html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
+  html += F("<title>Bili-Insight 设置</title></head><body>");
+  html += F("<h2>Bili-Insight 设置</h2>");
+  html += F("<form method='POST' action='/save'>");
+
+  // 下拉选择 + 手动输入（两个控件）
+  html += F("WiFi SSID:<br>");
+  html += F("<select id='ssid_select' style='width: 288px;' onchange=\"document.getElementById('ssid_input').value=this.value;\">");
+  html += F("<option value=''>（手动输入或选择）</option>");
+  if (n > 0) {
     for (int i = 0; i < n; ++i) {
-      String s   = WiFi.SSID(i);
+      String s = WiFi.SSID(i);
+      if (s.length() == 0) continue;
       String esc = htmlEscape(s);
-      html += "<option value='";
+      html += F("<option value='");
       html += esc;
-      html += "'";
-      if (s == curSsid) html += " selected";
-      html += ">";
+      html += F("'");
+      if (s == curSsid) html += F(" selected");
+      html += F(">");
       html += esc;
-      html += "</option>";
+      html += F("</option>");
     }
   }
-  html += F("</select><br><br>");
+  html += F("</select><br>");
+  html += F("<input id='ssid_input' name='ssid' style='width: 280px;' value='");
+  html += htmlEscape(curSsid);
+  html += F("'><br><br>");
 
-  html += F("密码:<br><input name='pass' type='password'><br><br>");
+  html += F("密码:<br><input name='pass' type='password' style='width: 280px;'><br><br>");
 
-  html += F("服务器:<br><input name='hostport' size='40' value='");
+  // 服务器默认空 + 不给示例
+  html += F("服务器 (host:port):<br><input name='hostport' size='40' value='");
   html += host;
   html += F("'><br><br>");
 
@@ -197,9 +341,9 @@ String buildConfigPage() {
     html += String(h);
     html += F(" 点</option>");
   }
-  html += F("</select><br><small>设备每天会在该小时左右刷新一次</small><br><br>");
+  html += F("</select><br><br>");
 
-  html += F("时区偏移:<br><select name='tz'>");
+  html += F("时区:<br><select name='tz'>");
   for (int t = -12; t <= 14; ++t) {
     html += "<option value='";
     html += String(t);
@@ -210,14 +354,18 @@ String buildConfigPage() {
     html += String(t);
     html += F("</option>");
   }
-  html += F("</select><br><small>默认 +8（东八区）</small><br><br>");
+  html += F("</select><br><br>");
 
   html += F("<label><input type='checkbox' name='rot180' value='1'");
   if (rot180) html += F(" checked");
   html += F("> 画面旋转 180°</label><br><br>");
 
-  html += F("<input type='submit' value='保存并重启'>"
-            "</form></body></html>");
+  if (n <= 0) {
+    html += F("<p style='color:#c00'>未扫描到 WiFi，可直接在上方输入框手动填写 SSID。</p>");
+  }
+
+  html += F("<input type='submit' value='保存并重启'>");
+  html += F("</form></body></html>");
 
   return html;
 }
@@ -226,10 +374,16 @@ String buildConfigPage() {
 //  WebServer 处理
 // =======================
 void handleRoot() {
+#if DEBUG_LOG
+  DBG_PRINTLN("[HTTP] GET /");
+#endif
   server.send(200, "text/html; charset=utf-8", buildConfigPage());
 }
 
 void handleSave() {
+#if DEBUG_LOG
+  DBG_PRINTLN("[HTTP] POST /save");
+#endif
   String ssid     = server.arg("ssid");
   String pass     = server.arg("pass");
   String host     = server.arg("hostport");
@@ -237,11 +391,16 @@ void handleSave() {
   String tzStr    = server.arg("tz");
   bool rot180Req  = (server.arg("rot180") == "1");
 
+  ssid.trim();
+  host.trim();
+
   Config newCfg = g_cfg;
 
   if (ssid.length() > 0) newCfg.wifi_ssid = ssid;
   if (pass.length() > 0) newCfg.wifi_pass = pass;
-  if (host.length() > 0) newCfg.backend_hostport = host;
+
+  // 允许留空
+  newCfg.backend_hostport = host;
 
   int32_t tz = tzStr.toInt();
   if (tz < -12) tz = -12;
@@ -264,125 +423,36 @@ void handleSave() {
     F("<html><body><h3>保存成功，设备即将重启...</h3></body></html>")
   );
 
-  delay(1000);
+  delay(800);
   ESP.restart();
 }
 
-void startConfigPortal() {
-  WiFi.mode(WIFI_AP_STA);
-
-  String apSsid     = "BiliDashboard-" + String((uint32_t)ESP.getEfuseMac(), HEX).substring(4);
-  const char* apPwd = "12345678";
-
-  WiFi.softAP(apSsid.c_str(), apPwd);
-
-  server.on("/", HTTP_GET, handleRoot);
-  server.on("/save", HTTP_POST, handleSave);
-  server.begin();
-
-  // 配置模式：不休眠，一直跑 WebServer
-  for (;;) {
-    server.handleClient();
-    delay(10);
-  }
+// =======================
+//  Deep Sleep 前：域配置
+// =======================
+void prepareDeepSleepDomains() {
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH,    ESP_PD_OPTION_OFF);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM,  ESP_PD_OPTION_OFF);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM,  ESP_PD_OPTION_OFF);
 }
 
 // =======================
-//  WiFi & 时间
+//  关闭墨水屏相关引脚，避免漏电流
 // =======================
-bool connectWiFi(const Config &cfg, uint32_t timeout_ms = 15000) {
-  if (cfg.wifi_ssid.isEmpty()) return false;
-
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(true);                           // STA 省电
-  WiFi.setTxPower(WIFI_POWER_8_5dBm);            // 降功率，足够连路由器就行
-  WiFi.begin(cfg.wifi_ssid.c_str(), cfg.wifi_pass.c_str());
-
-  uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < timeout_ms) {
-    delay(200);
-  }
-  return WiFi.status() == WL_CONNECTED;
-}
-
-bool syncTime(const Config &cfg, struct tm &outLocal) {
-  long offsetSec = (long)cfg.tz_offset_hours * 3600;
-  configTime(offsetSec, 0, "pool.ntp.org", "time.nist.gov", "ntp.aliyun.com");
-
-  for (int i = 0; i < 30; ++i) { // 最多等 15 秒
-    if (getLocalTime(&outLocal)) {
-#if DEBUG_LOG
-      char buf[64];
-      strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &outLocal);
-      DBG_PRINT("[TIME] OK: "); DBG_PRINTLN(buf);
-#endif
-      return true;
-    }
-    delay(500);
-  }
-  return false;
-}
-
-// =======================
-//  EPD 相关：睡眠前断开 IO（防反灌/悬空）
-// =======================
-void powerDownEPD() {
-  // 先设成输入
-  pinMode(PIN_EPD_BUSY, INPUT);
-  pinMode(PIN_EPD_RST,  INPUT);
-  pinMode(PIN_EPD_DC,   INPUT);
-  pinMode(PIN_EPD_CS,   INPUT);
-  pinMode(PIN_EPD_SCLK, INPUT);
-  pinMode(PIN_EPD_DIN,  INPUT);
-
-  // 再给一个明确的下拉，减少悬空导致的漏电（经验做法）
-  pinMode(PIN_EPD_BUSY, INPUT_PULLDOWN);
-  pinMode(PIN_EPD_RST,  INPUT_PULLDOWN);
-  pinMode(PIN_EPD_DC,   INPUT_PULLDOWN);
-  pinMode(PIN_EPD_CS,   INPUT_PULLDOWN);
-  pinMode(PIN_EPD_SCLK, INPUT_PULLDOWN);
-  pinMode(PIN_EPD_DIN,  INPUT_PULLDOWN);
-}
-
-// =======================
-//  Deep Sleep 前：GPIO disable/pulldown/hold + RTC isolate
-// =======================
-
-static bool shouldSkipGpioForSleep(int gpio) {
-  // LED
-  if (gpio == LED_BUILTIN) return true;
-
-  // EPD 脚单独处理
-  if (gpio == PIN_EPD_BUSY) return true;
-  if (gpio == PIN_EPD_RST)  return true;
-  if (gpio == PIN_EPD_DC)   return true;
-  if (gpio == PIN_EPD_CS)   return true;
-  if (gpio == PIN_EPD_SCLK) return true;
-  if (gpio == PIN_EPD_DIN)  return true;
-
-  // UART0（常见 IO43/IO44），你在用 Serial0：保守不动
-  if (gpio == 43 || gpio == 44) return true;
-
-  // USB D+/D-（常见 IO19/IO20），保守不动
-  if (gpio == 19 || gpio == 20) return true;
-
-  // strap 脚（经验避坑）
-  if (gpio == 0 || gpio == 45 || gpio == 46) return true;
-
-  return false;
-}
-
-static void deepSleepIsolateAndHoldGPIO() {
-#if DEBUG_LOG
-  DBG_PRINTLN("[SLEEP] isolate/hold GPIO start");
-#endif
-
-  // 先 hold EPD 脚（我们希望它们在 sleep 期间稳定保持“下拉输入”）
+static void powerDownEPD() {
   const int epdPins[] = { PIN_EPD_BUSY, PIN_EPD_RST, PIN_EPD_DC, PIN_EPD_CS, PIN_EPD_SCLK, PIN_EPD_DIN };
   for (size_t i = 0; i < sizeof(epdPins)/sizeof(epdPins[0]); ++i) {
-    int gpio = epdPins[i];
-    gpio_num_t gn = (gpio_num_t)gpio;
+    int p = epdPins[i];
+    pinMode(p, INPUT);
+    pinMode(p, INPUT_PULLDOWN);
+  }
+}
 
+// 只 hold EPD 相关脚：别再全局扫 GPIO
+static void deepSleepHoldOnlyEpdPins() {
+  const int epdPins[] = { PIN_EPD_BUSY, PIN_EPD_RST, PIN_EPD_DC, PIN_EPD_CS, PIN_EPD_SCLK, PIN_EPD_DIN };
+  for (size_t i = 0; i < sizeof(epdPins)/sizeof(epdPins[0]); ++i) {
+    gpio_num_t gn = (gpio_num_t)epdPins[i];
     if (!GPIO_IS_VALID_GPIO(gn)) continue;
 
     gpio_set_direction(gn, GPIO_MODE_INPUT);
@@ -390,47 +460,17 @@ static void deepSleepIsolateAndHoldGPIO() {
     gpio_pullup_dis(gn);
     gpio_hold_en(gn);
 
-    if (rtc_gpio_is_valid_gpio(gn)) {
-      rtc_gpio_isolate(gn);
-    }
+    if (rtc_gpio_is_valid_gpio(gn)) rtc_gpio_isolate(gn);
   }
-
-  // 再处理其它 GPIO：disable + 下拉 + hold
-  for (int gpio = 0; gpio <= 48; ++gpio) {
-    if (shouldSkipGpioForSleep(gpio)) continue;
-
-    gpio_num_t gn = (gpio_num_t)gpio;
-    if (!GPIO_IS_VALID_GPIO(gn)) continue;
-
-    gpio_set_direction(gn, GPIO_MODE_DISABLE);
-    gpio_pulldown_en(gn);
-    gpio_pullup_dis(gn);
-    gpio_hold_en(gn);
-
-    if (rtc_gpio_is_valid_gpio(gn)) {
-      rtc_gpio_isolate(gn);
-    }
-  }
-
-#if DEBUG_LOG
-  DBG_PRINTLN("[SLEEP] isolate/hold GPIO done");
-#endif
+  gpio_deep_sleep_hold_en();
 }
 
 // =======================
-//  Deep Sleep 工具
+//  Deep Sleep
 // =======================
-void prepareDeepSleepDomains() {
-  // 关掉 RTC 外设（如果没有 RTC IO 唤醒）
-  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
-  // RTC SLOW / FAST 内存都不用
-  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
-  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM, ESP_PD_OPTION_OFF);
-}
-
 void goDeepSleepMinutes(uint32_t minutes) {
-  if (minutes < 10)   minutes = 10;
-  if (minutes > 1440) minutes = 1440; // 最多 24 小时
+  if (minutes < 1)    minutes = 1;
+  if (minutes > 1440) minutes = 1440;
 
 #if DEBUG_LOG
   DBG_PRINT("[SLEEP] minutes="); DBG_PRINTLN((int)minutes);
@@ -438,59 +478,161 @@ void goDeepSleepMinutes(uint32_t minutes) {
 
   uint64_t us = (uint64_t)minutes * 60ULL * 1000000ULL;
 
-  // 睡前把 EPD IO 收口（否则屏板可能通过 IO 反灌/上拉把你拖到 mA）
+  if (framebuffer) {
+    heap_caps_free(framebuffer);
+    framebuffer = nullptr;
+  }
+
   powerDownEPD();
 
-  // 关 WiFi / BT
-  WiFi.disconnect(true);
+  WiFi.disconnect(true, true);
   WiFi.mode(WIFI_OFF);
-#if defined(BLUEFRUIT_FEATHER) || defined(CONFIG_BT_ENABLED)
-  btStop();
+  esp_wifi_stop();
+
+#if defined(CONFIG_BT_ENABLED)
+  esp_bt_controller_disable();
 #endif
 
-  // === 新增：GPIO isolate/hold（在关 RTC 域之前做） ===
-  deepSleepIsolateAndHoldGPIO();
+  deepSleepHoldOnlyEpdPins();
 
   prepareDeepSleepDomains();
   esp_sleep_enable_timer_wakeup(us);
+
+#if DEBUG_LOG
+  DBG_PRINTLN("[SLEEP] go deep sleep");
+#endif
   esp_deep_sleep_start();
 }
 
-// 计算距离下一个“cfg.refresh_hour:00”的分钟数
-void sleepUntilNextSchedule(const Config &cfg, bool hasTime, const struct tm &now) {
-  if (!hasTime) {
-    goDeepSleepMinutes(1440);
-    return;
+// =======================
+//  启动 AP 配置模式（不清 NVS）
+//  保底：X 分钟没保存配置 -> 睡到“下一个刷新点”
+// =======================
+void startConfigPortal() {
+#if DEBUG_LOG
+  DBG_PRINTLN("[CFG] enter startConfigPortal()");
+#endif
+
+  wifiHardResetForPortal();
+
+  String apSsid     = "BiliDashboard-" + String((uint32_t)ESP.getEfuseMac(), HEX).substring(4);
+  const char* apPwd = "12345678";
+
+  bool apOk = WiFi.softAP(apSsid.c_str(), apPwd);
+
+#if DEBUG_LOG
+  DBG_PRINT("[CFG] softAP result = "); DBG_PRINTLN(apOk ? "OK" : "FAIL");
+  DBG_PRINT("[CFG] AP SSID = "); DBG_PRINTLN(apSsid);
+  DBG_PRINT("[CFG] AP IP   = "); DBG_PRINTLN(WiFi.softAPIP());
+#endif
+
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/save", HTTP_POST, handleSave);
+  server.begin();
+
+  uint32_t enterMs = millis();
+
+  for (;;) {
+    server.handleClient();
+
+    if (millis() - enterMs > AP_TIMEOUT_MS) {
+#if DEBUG_LOG
+      DBG_PRINTLN("[AP] timeout: no config saved");
+#endif
+      uint32_t mins = minutesToNextRefreshFromLastEpoch(g_cfg);
+#if DEBUG_LOG
+      DBG_PRINT("[AP] sleep to next refresh, minutes="); DBG_PRINTLN((int)mins);
+#endif
+      delay(50);
+      goDeepSleepMinutes(mins);
+    }
+
+    delay(10);
   }
-
-  int curMinOfDay = now.tm_hour * 60 + now.tm_min;
-  int targetMin   = (int)cfg.refresh_hour * 60;
-  int delta;
-
-  if (curMinOfDay < targetMin) {
-    delta = targetMin - curMinOfDay;
-  } else {
-    delta = 24 * 60 - (curMinOfDay - targetMin);
-  }
-
-  if (delta < 1) delta = 24 * 60;
-
-  goDeepSleepMinutes((uint32_t)delta);
 }
 
 // =======================
-//  HTTP 下载 dashboard.bin 到 PSRAM
+//  WiFi 连接
 // =======================
-uint8_t* framebuffer = nullptr;
+bool connectWiFi(const Config &cfg, uint32_t timeout_ms = 15000) {
+#if DEBUG_LOG
+  DBG_PRINTLN("[WIFI] connectWiFi()");
+  DBG_PRINT("[WIFI] target ssid="); DBG_PRINTLN(cfg.wifi_ssid);
+#endif
 
+  if (cfg.wifi_ssid.isEmpty()) return false;
+
+  WiFi.disconnect(true, true);
+  WiFi.mode(WIFI_STA);
+
+  WiFi.setSleep(true);
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  WiFi.begin(cfg.wifi_ssid.c_str(), cfg.wifi_pass.c_str());
+
+  uint32_t start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < timeout_ms) {
+    delay(200);
+#if DEBUG_LOG
+    DBG_PRINT(".");
+#endif
+  }
+#if DEBUG_LOG
+  DBG_PRINTLN();
+#endif
+
+  bool ok = (WiFi.status() == WL_CONNECTED);
+
+#if DEBUG_LOG
+  if (ok) {
+    DBG_PRINTLN("[WIFI] connected");
+    DBG_PRINT("[WIFI] IP="); DBG_PRINTLN(WiFi.localIP());
+  } else {
+    DBG_PRINTLN("[WIFI] connect FAILED");
+  }
+#endif
+
+  return ok;
+}
+
+// =======================
+//  NTP 同步时间
+// =======================
+bool syncTime(const Config &cfg, struct tm &outLocal) {
+#if DEBUG_LOG
+  DBG_PRINTLN("[TIME] syncTime start");
+#endif
+  long offsetSec = (long)cfg.tz_offset_hours * 3600;
+  configTime(offsetSec, 0, "pool.ntp.org", "time.nist.gov", "ntp.aliyun.com");
+
+  for (int i = 0; i < 30; ++i) {
+    if (getLocalTime(&outLocal)) {
+#if DEBUG_LOG
+      char buf[64];
+      strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &outLocal);
+      DBG_PRINT("[TIME] OK: "); DBG_PRINTLN(buf);
+#endif
+      time_t nowEpoch = time(nullptr);
+      if (nowEpoch > 0) saveLastTimeEpoch(nowEpoch);
+      return true;
+    }
+    delay(500);
+  }
+#if DEBUG_LOG
+  DBG_PRINTLN("[TIME] syncTime FAILED");
+#endif
+  return false;
+}
+
+// =======================
+//  HTTP 下载 dashboard.bin 到 framebuffer（800x480, 1字节/像素：0黑1白2红3黄）
+// =======================
 bool downloadDashboardBin(const Config &cfg) {
-  size_t target = (size_t)EPD_WIDTH * EPD_HEIGHT; // 800*480 = 384000 bytes
+  size_t target = (size_t)EPD_WIDTH * EPD_HEIGHT; // 384000 bytes
 
   if (!framebuffer) {
 #if DEBUG_LOG
     DBG_PRINT("[FB] malloc framebuffer size="); DBG_PRINTLN((int)target);
 #endif
-    // 优先用 PSRAM
     framebuffer = (uint8_t*)heap_caps_malloc(
       target,
       MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM
@@ -509,14 +651,28 @@ bool downloadDashboardBin(const Config &cfg) {
     return false;
   }
 
-  // 构造 URL: http://host:port/api/esp32/dashboard.bin
-  String url;
+  if (cfg.backend_hostport.length() == 0) {
+#if DEBUG_LOG
+    DBG_PRINTLN("[HTTP] hostport empty, skip download");
+#endif
+    return false;
+  }
+
+  // 规范化 URL：支持 host:port 或 http(s)://host:port
   String hp = cfg.backend_hostport;
   hp.trim();
+
+  String url;
   if (hp.startsWith("http://") || hp.startsWith("https://")) {
-    url = hp;
+    // 如果用户填的是 base（没有路径），就补上 DASHBOARD_PATH
+    if (hp.indexOf("/") == hp.indexOf("://") + 3) {
+      url = hp + String(DASHBOARD_PATH);
+    } else {
+      // 用户可能直接填了完整路径，那就直接用
+      url = hp;
+    }
   } else {
-    url = "http://" + hp + "/api/esp32/dashboard.bin";
+    url = "http://" + hp + String(DASHBOARD_PATH);
   }
 
 #if DEBUG_LOG
@@ -548,10 +704,9 @@ bool downloadDashboardBin(const Config &cfg) {
   while (http.connected() && (len > 0 || len == -1) && total < target) {
     if (millis() - start_ms > DOWNLOAD_TIMEOUT_MS) {
 #if DEBUG_LOG
-      DBG_PRINTLN("[HTTP] download timeout, go deep sleep 24h");
+      DBG_PRINTLN("[HTTP] download timeout");
 #endif
       http.end();
-      goDeepSleepMinutes(24 * 60);
       return false;
     }
 
@@ -585,78 +740,137 @@ bool downloadDashboardBin(const Config &cfg) {
     return false;
   }
 
-  if (cfg.rotate180) {
-#if DEBUG_LOG
-    DBG_PRINTLN("[ROT] applying 180-degree rotation to framebuffer");
-#endif
-    size_t i = 0;
-    size_t j = target - 1;
-    while (i < j) {
-      uint8_t tmp      = framebuffer[i];
-      framebuffer[i]   = framebuffer[j];
-      framebuffer[j]   = tmp;
-      ++i;
-      --j;
-    }
-  }
-
   return true;
 }
 
 // =======================
-//  墨水屏显示
+//  墨水屏显示（横屏 800x480，旋转只用 setRotation(0/2)）
 // =======================
 void initDisplay(const Config &cfg) {
+#if DEBUG_LOG
+  DBG_PRINTLN("[EPD] initDisplay");
+#endif
   SPI.end();
   SPI.begin(PIN_EPD_SCLK, -1 /*MISO*/, PIN_EPD_DIN, PIN_EPD_CS);
 
   display.init(0, true, 2, false);
 
-#if DEBUG_LOG
-  DBG_PRINT("[EPD] rotate180="); DBG_PRINTLN(cfg.rotate180 ? "true" : "false");
-#endif
+  // 横屏：rotation=0 正向；rotation=2 旋转180
+  if (cfg.rotate180) display.setRotation(2);
+  else              display.setRotation(0);
 
-  if (cfg.rotate180) {
-    display.setRotation(3);
-  } else {
-    display.setRotation(1);
-  }
+#if DEBUG_LOG
+  DBG_PRINT("[EPD] rotation="); DBG_PRINTLN(cfg.rotate180 ? 2 : 0);
+#endif
 }
 
-void drawFromFramebuffer() {
+void drawFromFramebuffer(const Config &cfg) {
+  (void)cfg;
+
   display.setFullWindow();
-  display.epd2.drawDemoBitmap(
-    framebuffer,
-    0, 0, 0,
-    EPD_WIDTH, EPD_HEIGHT,
-    0,
-    false,
-    false
-  );
+
+  int w = display.width();   // rotation=0 应为 800
+  int h = display.height();  // rotation=0 应为 480
+
+#if DEBUG_LOG
+  DBG_PRINT("[EPD] logical w="); DBG_PRINT(w);
+  DBG_PRINT(" h="); DBG_PRINTLN(h);
+#endif
+
+  display.firstPage();
+  do {
+    for (int y = 0; y < EPD_HEIGHT && y < h; ++y) {
+      for (int x = 0; x < EPD_WIDTH && x < w; ++x) {
+        uint8_t c = framebuffer[y * EPD_WIDTH + x];
+
+        uint16_t col;
+        switch (c) {
+          case 0: col = GxEPD_BLACK;  break;
+          case 1: col = GxEPD_WHITE;  break;
+          case 2: col = GxEPD_RED;    break;
+          case 3: col = GxEPD_YELLOW; break;
+          default: col = GxEPD_WHITE; break;
+        }
+
+        display.drawPixel(x, y, col);
+      }
+    }
+  } while (display.nextPage());
+
   display.hibernate();
+}
+
+// =======================
+//  睡到下一个整点刷新
+// =======================
+void sleepUntilNextSchedule(const Config &cfg, bool hasTime, const struct tm &now) {
+  if (!hasTime) {
+    goDeepSleepMinutes(1440);
+    return;
+  }
+
+  int curMinOfDay = now.tm_hour * 60 + now.tm_min;
+  int targetMin   = (int)cfg.refresh_hour * 60;
+  int delta;
+
+  if (curMinOfDay < targetMin) delta = targetMin - curMinOfDay;
+  else                         delta = 24 * 60 - (curMinOfDay - targetMin);
+
+  if (delta < 1) delta = 24 * 60;
+
+#if DEBUG_LOG
+  DBG_PRINT("[SLEEP] nowMin="); DBG_PRINT(curMinOfDay);
+  DBG_PRINT(" targetMin="); DBG_PRINT(targetMin);
+  DBG_PRINT(" delta="); DBG_PRINTLN(delta);
+#endif
+
+  goDeepSleepMinutes((uint32_t)delta);
 }
 
 // =======================
 //  setup / loop
 // =======================
 void setup() {
+  releaseAllGpioHoldsAtBoot();
+
   setCpuFrequencyMhz(80);
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
 
   DBG_BEGIN();
+  delay(200);
+
 #if DEBUG_LOG
-  DBG_PRINTLN("===== ESP32-S3 Bili-Insight Ink Display boot (release) =====");
+  DBG_PRINTLN();
+  DBG_PRINTLN("===== ESP32-S3 Bili-Insight Dashboard boot =====");
 #endif
+
+  if (isFactoryResetRequestedAtBoot()) {
+#if DEBUG_LOG
+    DBG_PRINTLN("[BOOT] GPIO38 LOW at boot -> clear NVS");
+#endif
+    clearConfigNVS();
+  }
+
+  randomSeed(esp_random());
 
   loadConfig(g_cfg);
 
   if (!g_cfg.valid) {
-    startConfigPortal(); // 不返回
+#if DEBUG_LOG
+    DBG_PRINTLN("[BOOT] no valid config -> AP portal");
+#endif
+    startConfigPortal();
   }
 
+#if DEBUG_LOG
+  DBG_PRINTLN("[BOOT] have config -> connect WiFi");
+#endif
   if (!connectWiFi(g_cfg)) {
-    startConfigPortal(); // 不返回
+#if DEBUG_LOG
+    DBG_PRINTLN("[BOOT] connect failed -> AP portal");
+#endif
+    startConfigPortal();
   }
 
   struct tm timeinfo;
@@ -665,16 +879,17 @@ void setup() {
   bool ok = downloadDashboardBin(g_cfg);
   if (ok) {
     initDisplay(g_cfg);
-    drawFromFramebuffer();
+    drawFromFramebuffer(g_cfg);
+  } else {
+#if DEBUG_LOG
+    DBG_PRINTLN("[BOOT] downloadDashboardBin FAILED");
+#endif
   }
 
   if (!hasTime) {
     struct tm tmp;
-    if (syncTime(g_cfg, tmp)) {
-      sleepUntilNextSchedule(g_cfg, true, tmp);
-    } else {
-      sleepUntilNextSchedule(g_cfg, false, timeinfo);
-    }
+    if (syncTime(g_cfg, tmp)) sleepUntilNextSchedule(g_cfg, true, tmp);
+    else                      sleepUntilNextSchedule(g_cfg, false, timeinfo);
   } else {
     sleepUntilNextSchedule(g_cfg, true, timeinfo);
   }
