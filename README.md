@@ -1,5 +1,9 @@
 # Bili-Insights
 
+<p align="left">
+  <img src="esp32/Bili-Insights.jpeg" width="80%">
+</p>
+
 Bili-Insights 是一个用于抓取、统计并可视化 B 站 UP 主数据的轻量级工具。  
 特点是：本地部署、每日快照、可视化看板、支持视频数据与账号数据分析。  
 可使用 ESP32 墨水屏看板监视每日数据。
