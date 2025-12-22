@@ -171,16 +171,3 @@ sudo systemctl status bili-insights.service
 ## 相关项目
 Bilibili 野生 API 收集：  
 https://github.com/SocialSisterYi/bilibili-API-collect
-
-
-## License
-
-本项目采用 **CC BY-NC-SA 4.0（署名-非商业性使用-相同方式共享）** 授权协议。
-
-你可以：
-- 复制、分发、修改本项目代码；
-- 在非商业用途下使用；
-
-你不能：
-- 将本项目代码或其衍生版本用于任何商业目的；
-- 以任何商业形式出售、分发或提供本项目。
