@@ -90,7 +90,7 @@ mv config-example.py config.py
 - dashboard7c_800x480.bin：供 ESP32 下载的帧缓冲文件。
 
 2. 从 ES232 中拉取 bin 文件并显示在墨水屏上。  
-详见 [esp32/README.md](https://github.com/thedonalddon/Bili-Insights/tree/main/esp32/)
+详见 [esp32/README.md](https://github.com/dai-hongtao/Bili-Insights/tree/main/esp32/)
 
 ## 服务器部署与定时任务示例（可选）
 
@@ -168,6 +168,17 @@ sudo systemctl enable bili-insights.service
 sudo systemctl status bili-insights.service
 ```
 
-## 相关项目
-Bilibili 野生 API 收集：  
-https://github.com/SocialSisterYi/bilibili-API-collect
+## 声明
+- 本项目参考并使用了「Bilibili 野生 API 收集」项目中的部分接口：  
+  https://github.com/SocialSisterYi/bilibili-API-collect  
+  该项目采用 MIT License 许可，版权所有 © SocialSisterYi。
+
+
+- 本项目仅用于个人数据分析与技术研究，所使用的接口均来源于 Bilibili 网站公开可访问的网络请求。
+
+
+- 使用本项目所产生的任何风险与责任，均由使用者自行承担。使用者在使用本项目时，应自行遵守哔哩哔哩的相关服务条款、使用规范及适用的法律法规。
+
+
+- ESP32 固件依赖 GxEPD2 © ZinggJM（GPL-3.0）：https://github.com/ZinggJM/GxEPD2  
+  如对外分发编译后的固件，请同时遵守 GPL-3.0。

@@ -1,5 +1,7 @@
 # bili_api.py
-# 本项目参考了 bilibili-API-collect 项目中的 API：https://github.com/SocialSisterYi/bilibili-API-collect
+# 本项目参考并使用了 bilibili-API-collect 项目中的部分 API：https://github.com/SocialSisterYi/bilibili-API-collect
+# Original project licensed under the MIT License.
+# Copyright © SocialSisterYi
 
 import time
 import hashlib
